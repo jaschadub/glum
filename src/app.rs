@@ -238,7 +238,7 @@ impl App {
         let new = (self.offset as isize + delta).clamp(0, max as isize) as usize;
         if new != self.offset {
             self.offset = new;
-            }
+        }
     }
 
     fn cycle_theme(&mut self) {
@@ -278,10 +278,7 @@ impl App {
     fn toggle_wrap_code(&mut self) {
         self.wrap_code = !self.wrap_code;
         self.re_render();
-        self.cfg
-            .store
-            .set_wrap_code(self.wrap_code)
-            .ok();
+        self.cfg.store.set_wrap_code(self.wrap_code).ok();
         self.set_status(if self.wrap_code {
             "code: wrap"
         } else {
@@ -294,8 +291,11 @@ impl App {
         if total <= 1 {
             return 100;
         }
-        let visible_end = (self.offset + self.last_viewport_h.saturating_sub(2) as usize).min(total);
-        ((visible_end as f64 / total as f64) * 100.0).round().clamp(0.0, 100.0) as u16
+        let visible_end =
+            (self.offset + self.last_viewport_h.saturating_sub(2) as usize).min(total);
+        ((visible_end as f64 / total as f64) * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u16
     }
 
     /// Recompute match line indices for `needle`. Keeps the current cursor if
@@ -523,7 +523,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         Mode::Help => {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('q' | '?')) {
                 app.mode = Mode::Reading;
-                }
+            }
             Ok(false)
         }
     }
@@ -547,14 +547,16 @@ fn handle_key_reading(app: &mut App, key: KeyEvent) -> Result<bool> {
             } else {
                 let selected = current_toc_index(&app.rendered.toc, app.offset);
                 app.mode = Mode::Toc { selected };
-                }
+            }
         }
         KeyCode::Char('T') => app.cycle_theme(),
         KeyCode::Char('L') => app.cycle_layout(),
         KeyCode::Char('A') => app.toggle_align(),
         KeyCode::Char('W') => app.toggle_wrap_code(),
         KeyCode::Char('/') => {
-            app.mode = Mode::Search { input: String::new() };
+            app.mode = Mode::Search {
+                input: String::new(),
+            };
         }
         KeyCode::Char('n') | KeyCode::Tab | KeyCode::Right => app.advance_search(true),
         KeyCode::Char('N') | KeyCode::BackTab | KeyCode::Left => app.advance_search(false),
@@ -577,20 +579,18 @@ fn handle_key_toc(app: &mut App, key: KeyEvent) -> Result<bool> {
         KeyCode::Esc | KeyCode::Char('q' | 't') => {
             app.mode = Mode::Reading;
         }
-        KeyCode::Char('j') | KeyCode::Down
-            if toc_len > 0 => {
-                *selected = (*selected + 1).min(toc_len - 1);
-                }
+        KeyCode::Char('j') | KeyCode::Down if toc_len > 0 => {
+            *selected = (*selected + 1).min(toc_len - 1);
+        }
         KeyCode::Char('k') | KeyCode::Up => {
             *selected = selected.saturating_sub(1);
         }
         KeyCode::Char('g') | KeyCode::Home => {
             *selected = 0;
         }
-        KeyCode::Char('G') | KeyCode::End
-            if toc_len > 0 => {
-                *selected = toc_len - 1;
-                }
+        KeyCode::Char('G') | KeyCode::End if toc_len > 0 => {
+            *selected = toc_len - 1;
+        }
         KeyCode::Enter => {
             if let Some(e) = app.rendered.toc.get(*selected) {
                 let line = e.line;
@@ -705,7 +705,9 @@ fn find_heading(toc: &[TocEntry], query: &str) -> Option<usize> {
     if let Some(e) = toc.iter().find(|e| e.title.to_lowercase() == q) {
         return Some(e.line);
     }
-    toc.iter().find(|e| e.title.to_lowercase().contains(&q)).map(|e| e.line)
+    toc.iter()
+        .find(|e| e.title.to_lowercase().contains(&q))
+        .map(|e| e.line)
 }
 
 fn current_toc_index(toc: &[TocEntry], offset: usize) -> usize {
@@ -779,8 +781,7 @@ fn draw_body(f: &mut ratatui::Frame<'_>, app: &App, rect: Rect) {
             if (start..end).contains(&m) {
                 let rel = m - start;
                 let original = display[rel].clone();
-                let hl_style = Style::default()
-                    .add_modifier(Modifier::REVERSED);
+                let hl_style = Style::default().add_modifier(Modifier::REVERSED);
                 let marked: Vec<Span<'static>> = original
                     .spans
                     .into_iter()
@@ -801,7 +802,10 @@ fn draw_footer(f: &mut ratatui::Frame<'_>, app: &App, rect: Rect) {
     let dim = app.theme.dim_style();
     let accent = app.theme.accent_style();
 
-    let name = shorten_middle(&app.cfg.display_name, rect.width.saturating_sub(32) as usize);
+    let name = shorten_middle(
+        &app.cfg.display_name,
+        rect.width.saturating_sub(32) as usize,
+    );
     let pct = app.percent();
 
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -852,7 +856,12 @@ fn draw_toc_overlay(f: &mut ratatui::Frame<'_>, app: &App, selected: usize, area
     let h = (f32::from(area.height) * 0.7) as u16;
     let x = (area.width - w) / 2 + area.x;
     let y = (area.height - h) / 2 + area.y;
-    let rect = Rect { x, y, width: w, height: h };
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
 
     f.render_widget(Clear, rect);
     let block = Block::default()
@@ -885,7 +894,12 @@ fn draw_search_overlay(f: &mut ratatui::Frame<'_>, app: &App, input: &str, area:
     let w = area.width.saturating_sub(8).min(80);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + area.height.saturating_sub(h + 2);
-    let rect = Rect { x, y, width: w, height: h };
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
     f.render_widget(Clear, rect);
 
     let count_text = if input.is_empty() {
@@ -897,7 +911,11 @@ fn draw_search_overlay(f: &mut ratatui::Frame<'_>, app: &App, input: &str, area:
             "{}/{} match{}",
             app.search_cursor + 1,
             app.search_matches.len(),
-            if app.search_matches.len() == 1 { "" } else { "es" }
+            if app.search_matches.len() == 1 {
+                ""
+            } else {
+                "es"
+            }
         )
     };
     let title = format!(" Search \u{2014} {count_text} ");
@@ -931,7 +949,12 @@ fn draw_help_overlay(f: &mut ratatui::Frame<'_>, app: &App, area: Rect) {
     let h = 22u16.min(area.height.saturating_sub(4));
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
-    let rect = Rect { x, y, width: w, height: h };
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
     f.render_widget(Clear, rect);
     let block = Block::default()
         .title(" Help ")
@@ -1018,8 +1041,18 @@ mod tests {
     #[test]
     fn pick_code_block_prefers_intersection() {
         let blocks = vec![
-            CodeBlockEntry { start_line: 10, end_line: 20, lang: "rust".into(), code: "a".into() },
-            CodeBlockEntry { start_line: 30, end_line: 40, lang: "py".into(), code: "b".into() },
+            CodeBlockEntry {
+                start_line: 10,
+                end_line: 20,
+                lang: "rust".into(),
+                code: "a".into(),
+            },
+            CodeBlockEntry {
+                start_line: 30,
+                end_line: 40,
+                lang: "py".into(),
+                code: "b".into(),
+            },
         ];
         let b = pick_code_block(&blocks, 15, 25).unwrap();
         assert_eq!(b.lang, "rust");
@@ -1028,8 +1061,18 @@ mod tests {
     #[test]
     fn pick_code_block_falls_back_above() {
         let blocks = vec![
-            CodeBlockEntry { start_line: 5, end_line: 7, lang: "rust".into(), code: "a".into() },
-            CodeBlockEntry { start_line: 50, end_line: 60, lang: "py".into(), code: "b".into() },
+            CodeBlockEntry {
+                start_line: 5,
+                end_line: 7,
+                lang: "rust".into(),
+                code: "a".into(),
+            },
+            CodeBlockEntry {
+                start_line: 50,
+                end_line: 60,
+                lang: "py".into(),
+                code: "b".into(),
+            },
         ];
         let b = pick_code_block(&blocks, 20, 25).unwrap();
         assert_eq!(b.lang, "rust");
@@ -1037,9 +1080,12 @@ mod tests {
 
     #[test]
     fn pick_code_block_falls_back_below() {
-        let blocks = vec![
-            CodeBlockEntry { start_line: 50, end_line: 60, lang: "py".into(), code: "b".into() },
-        ];
+        let blocks = vec![CodeBlockEntry {
+            start_line: 50,
+            end_line: 60,
+            lang: "py".into(),
+            code: "b".into(),
+        }];
         let b = pick_code_block(&blocks, 0, 10).unwrap();
         assert_eq!(b.lang, "py");
     }
@@ -1047,8 +1093,16 @@ mod tests {
     #[test]
     fn find_heading_exact_wins_over_substring() {
         let toc = vec![
-            TocEntry { level: 1, title: "Installation".into(), line: 10 },
-            TocEntry { level: 2, title: "Install".into(), line: 42 },
+            TocEntry {
+                level: 1,
+                title: "Installation".into(),
+                line: 10,
+            },
+            TocEntry {
+                level: 2,
+                title: "Install".into(),
+                line: 42,
+            },
         ];
         // "install" is a substring of both but an exact case-insensitive match
         // of the second → second wins.
@@ -1058,8 +1112,16 @@ mod tests {
     #[test]
     fn find_heading_substring_when_no_exact() {
         let toc = vec![
-            TocEntry { level: 1, title: "Code blocks".into(), line: 100 },
-            TocEntry { level: 2, title: "Quoting text".into(), line: 200 },
+            TocEntry {
+                level: 1,
+                title: "Code blocks".into(),
+                line: 100,
+            },
+            TocEntry {
+                level: 2,
+                title: "Quoting text".into(),
+                line: 200,
+            },
         ];
         assert_eq!(find_heading(&toc, "quot"), Some(200));
         assert_eq!(find_heading(&toc, "nonexistent"), None);
@@ -1069,9 +1131,21 @@ mod tests {
     #[test]
     fn current_toc_index_finds_nearest_heading_above() {
         let toc = vec![
-            TocEntry { level: 1, title: "A".into(), line: 0 },
-            TocEntry { level: 2, title: "B".into(), line: 10 },
-            TocEntry { level: 2, title: "C".into(), line: 20 },
+            TocEntry {
+                level: 1,
+                title: "A".into(),
+                line: 0,
+            },
+            TocEntry {
+                level: 2,
+                title: "B".into(),
+                line: 10,
+            },
+            TocEntry {
+                level: 2,
+                title: "C".into(),
+                line: 20,
+            },
         ];
         assert_eq!(current_toc_index(&toc, 0), 0);
         assert_eq!(current_toc_index(&toc, 15), 1);

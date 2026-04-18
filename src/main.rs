@@ -124,15 +124,17 @@ fn load_input(p: &Path) -> Result<(PathBuf, String)> {
             .read_to_end(&mut buf)
             .context("reading stdin")?;
         if buf.len() as u64 > MAX_INPUT_BYTES {
-            anyhow::bail!("stdin input exceeds {} MiB limit", MAX_INPUT_BYTES / (1024 * 1024));
+            anyhow::bail!(
+                "stdin input exceeds {} MiB limit",
+                MAX_INPUT_BYTES / (1024 * 1024)
+            );
         }
         let text = String::from_utf8(buf).context("stdin is not valid UTF-8")?;
         let synthetic = PathBuf::from("<stdin>");
         return Ok((synthetic, text));
     }
 
-    let metadata = fs::metadata(p)
-        .with_context(|| format!("reading {}", p.display()))?;
+    let metadata = fs::metadata(p).with_context(|| format!("reading {}", p.display()))?;
     if !metadata.is_file() {
         anyhow::bail!("{} is not a regular file", p.display());
     }

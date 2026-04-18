@@ -36,7 +36,9 @@ pub fn smarten(input: &str) -> String {
         if c == '"' {
             let opens = match prev {
                 None => true,
-                Some(p) => p.is_whitespace() || matches!(p, '(' | '[' | '{' | '\u{2014}' | '\u{2013}'),
+                Some(p) => {
+                    p.is_whitespace() || matches!(p, '(' | '[' | '{' | '\u{2014}' | '\u{2013}')
+                }
             };
             out.push(if opens { '\u{201C}' } else { '\u{201D}' });
             i += 1;

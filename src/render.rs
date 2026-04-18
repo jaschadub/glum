@@ -374,9 +374,7 @@ impl Renderer {
             TagEnd::Item => {
                 self.flush_paragraph();
             }
-            TagEnd::Emphasis
-            | TagEnd::Strong
-            | TagEnd::Strikethrough => self.pop_style(),
+            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => self.pop_style(),
             TagEnd::Link => {
                 self.pop_style();
                 if let Some((link_start, url)) = self.in_link.take() {
@@ -444,11 +442,7 @@ impl Renderer {
         for _ in 0..decor.blank_before {
             // Avoid stacking multiple blanks when the previous block already
             // ended with one.
-            if !self
-                .out
-                .last()
-                .is_some_and(|l| l.width() == 0)
-            {
+            if !self.out.last().is_some_and(|l| l.width() == 0) {
                 self.blank();
             }
         }
@@ -466,9 +460,7 @@ impl Renderer {
         // Indent + prefix budget cuts into the wrap width so prefixed long
         // headings don't blow past the measure.
         let prefix_w = unicode_width::UnicodeWidthStr::width(decor.prefix.as_str());
-        let body_width = wrap_width
-            .saturating_sub(decor.indent + prefix_w)
-            .max(10);
+        let body_width = wrap_width.saturating_sub(decor.indent + prefix_w).max(10);
         let wrapped_lines: Vec<String> = textwrap::wrap(&display_text, body_width)
             .into_iter()
             .map(|s| s.into_owned())
@@ -536,10 +528,7 @@ impl Renderer {
 
         let gutter_str = self.block_gutter();
         let gutter_style = self.theme.quote_style();
-        let first_indent = self
-            .pending_list_marker
-            .take()
-            .unwrap_or_default();
+        let first_indent = self.pending_list_marker.take().unwrap_or_default();
         let list_indent = self
             .list_stack
             .last()
@@ -577,7 +566,15 @@ impl Renderer {
         let mut source_cursor = 0usize;
         for wline in wrapped {
             let s = wline.into_owned();
-            let line = self.styled_line_from_source(&s, &smart, &mut source_cursor, &ranges, &gutter_str, gutter_style, &first_indent);
+            let line = self.styled_line_from_source(
+                &s,
+                &smart,
+                &mut source_cursor,
+                &ranges,
+                &gutter_str,
+                gutter_style,
+                &first_indent,
+            );
             self.out.push(line);
         }
     }
@@ -618,11 +615,13 @@ impl Renderer {
 
         // List marker: only on the first wrapped line of a paragraph we haven't rendered yet.
         // We detect by prefix string match.
-        if !list_marker.is_empty()
-            && wrapped[wrapped_cursor..].starts_with(list_marker) {
-                spans.push(Span::styled(list_marker.to_string(), self.theme.accent_style()));
-                wrapped_cursor += list_marker.len();
-            }
+        if !list_marker.is_empty() && wrapped[wrapped_cursor..].starts_with(list_marker) {
+            spans.push(Span::styled(
+                list_marker.to_string(),
+                self.theme.accent_style(),
+            ));
+            wrapped_cursor += list_marker.len();
+        }
 
         // For the remaining content of the wrapped line, walk character by character
         // against the source, matching visible characters to recover their style.
@@ -662,7 +661,10 @@ impl Renderer {
                 Some(s) if s == style => buf.push(ch),
                 _ => {
                     if !buf.is_empty() {
-                        spans.push(Span::styled(std::mem::take(&mut buf), buf_style.unwrap_or(base)));
+                        spans.push(Span::styled(
+                            std::mem::take(&mut buf),
+                            buf_style.unwrap_or(base),
+                        ));
                     }
                     buf.push(ch);
                     buf_style = Some(style);
@@ -731,9 +733,7 @@ impl Renderer {
             let lbl = format!(" {lang_label} ");
             let lbl_w = unicode_width::UnicodeWidthStr::width(lbl.as_str());
             let leading_w = 3;
-            let mid_w = width
-                .saturating_sub(leading_w + lbl_w + copy_hint_w)
-                .max(1);
+            let mid_w = width.saturating_sub(leading_w + lbl_w + copy_hint_w).max(1);
             top_spans.push(Span::styled("\u{2500}".repeat(leading_w), rule_style));
             top_spans.push(Span::styled(lbl, label_style));
             top_spans.push(Span::styled("\u{2500}".repeat(mid_w), rule_style));
@@ -762,7 +762,14 @@ impl Renderer {
             //      multiple visual lines with a continuation marker.
             //   3. Too long + wrap_code off → truncate with `…`.
             if line_w <= code_cols {
-                self.push_code_line(&pad_str, &normalized, code_cols, &lang, pad_style, base_style);
+                self.push_code_line(
+                    &pad_str,
+                    &normalized,
+                    code_cols,
+                    &lang,
+                    pad_style,
+                    base_style,
+                );
                 continue;
             }
 
@@ -774,13 +781,13 @@ impl Renderer {
                 let chunks = wrap_code_line(&normalized, first_chunk_w, cont_chunk_w);
                 for (i, chunk) in chunks.iter().enumerate() {
                     if i == 0 {
-                        self.push_code_line(&pad_str, chunk, code_cols, &lang, pad_style, base_style);
+                        self.push_code_line(
+                            &pad_str, chunk, code_cols, &lang, pad_style, base_style,
+                        );
                     } else {
                         // Render: <pad><cont_marker><highlighted chunk><trailing pad>
                         let chunk_w = unicode_width::UnicodeWidthStr::width(chunk.as_str());
-                        let trailing = code_cols
-                            .saturating_sub(cont_w)
-                            .saturating_sub(chunk_w);
+                        let trailing = code_cols.saturating_sub(cont_w).saturating_sub(chunk_w);
                         let mut spans: Vec<Span<'static>> = Vec::new();
                         spans.push(Span::styled(pad_str.clone(), pad_style));
                         spans.push(Span::styled(cont_marker.to_string(), label_style));
@@ -797,7 +804,8 @@ impl Renderer {
             }
         }
 
-        self.out.push(Line::styled("\u{2500}".repeat(width), rule_style));
+        self.out
+            .push(Line::styled("\u{2500}".repeat(width), rule_style));
 
         let end_line = self.out.len() - 1;
         self.code_blocks.push(CodeBlockEntry {
@@ -877,8 +885,7 @@ impl Renderer {
             .map(|row| render_wrapped_row(row, &widths, body_style, sep_style, body_style))
             .collect();
 
-        let any_wrapping_row = body_wrapped.iter().any(|r| r.len() > 1)
-            || head_wrapped.len() > 1;
+        let any_wrapping_row = body_wrapped.iter().any(|r| r.len() > 1) || head_wrapped.len() > 1;
 
         let heavy_sep = {
             let mut s = String::new();
@@ -1167,7 +1174,12 @@ mod tests {
     fn lists_use_bullet() {
         let md = "- one\n- two\n";
         let r = render(md, 60, plain(), LayoutName::Minimal, true);
-        let text: String = r.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let text: String = r
+            .lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(text.contains("\u{2022}"), "expected bullet in: {text}");
     }
 
@@ -1200,7 +1212,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         // The bare URL appears exactly once, not as "url (url)".
-        assert_eq!(text.matches("https://example.com").count(), 1, "text was:\n{text}");
+        assert_eq!(
+            text.matches("https://example.com").count(),
+            1,
+            "text was:\n{text}"
+        );
     }
 
     #[test]
@@ -1213,7 +1229,10 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(!text.contains("#intro"), "anchor link should not render inline: {text}");
+        assert!(
+            !text.contains("#intro"),
+            "anchor link should not render inline: {text}"
+        );
         assert!(text.contains("the section"));
     }
 
@@ -1221,9 +1240,17 @@ mod tests {
     fn tables_render_header_and_rows() {
         let md = "| A | B |\n|---|---|\n| one | two |\n| three | four |\n";
         let r = render(md, 80, plain(), LayoutName::Minimal, true);
-        let text: String = r.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
         for s in ["A", "B", "one", "two", "three", "four"] {
-            assert!(text.contains(s), "expected `{s}` in rendered table:\n{text}");
+            assert!(
+                text.contains(s),
+                "expected `{s}` in rendered table:\n{text}"
+            );
         }
     }
 
@@ -1293,14 +1320,22 @@ mod tests {
             .iter()
             .map(Line::to_string)
             .any(|l| l.contains('\u{2502}') && !l.contains(" a "));
-        assert!(any_continuation, "expected cell content to wrap onto continuation lines:\n{text}");
+        assert!(
+            any_continuation,
+            "expected cell content to wrap onto continuation lines:\n{text}"
+        );
     }
 
     #[test]
     fn tables_with_inline_code_cells() {
         let md = "| name | value |\n|------|-------|\n| `x` | 1 |\n";
         let r = render(md, 80, plain(), LayoutName::Minimal, true);
-        let text: String = r.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
         // The inline-code text "x" should be in the cell (same line as "name" row
         // content), and NOT appear as a stray post-table paragraph.
         assert!(text.contains("name"));
@@ -1312,14 +1347,22 @@ mod tests {
                 break;
             }
         }
-        assert!(cell_line.is_some(), "x and 1 should share a single row line:\n{text}");
+        assert!(
+            cell_line.is_some(),
+            "x and 1 should share a single row line:\n{text}"
+        );
     }
 
     #[test]
     fn blockquote_has_gutter() {
         let md = "> quoted.\n";
         let r = render(md, 60, plain(), LayoutName::Minimal, true);
-        let text: String = r.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let text: String = r
+            .lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(text.contains("\u{2502}"));
     }
 
@@ -1330,7 +1373,10 @@ mod tests {
         let lines: Vec<String> = r.lines.iter().map(ToString::to_string).collect();
         // First rendered non-empty line should be the heading text, clean.
         let heading_line = lines.iter().find(|l| !l.trim().is_empty()).unwrap();
-        assert_eq!(heading_line.trim(), "C-3. panics in enterprise context compaction");
+        assert_eq!(
+            heading_line.trim(),
+            "C-3. panics in enterprise context compaction"
+        );
 
         // The bullet line must contain the item's body exactly once, with no
         // leading copy of the heading text.
@@ -1360,7 +1406,12 @@ mod tests {
     fn smart_substitution_preserves_text() {
         let md = "He said \"yes\" -- probably...\n";
         let r = render(md, 60, plain(), LayoutName::Minimal, true);
-        let text: String = r.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(text.contains("\u{201C}yes\u{201D}"));
         assert!(text.contains("\u{2014}"));
         assert!(text.contains("\u{2026}"));
@@ -1370,7 +1421,12 @@ mod tests {
     fn html_tags_are_hidden() {
         let md = "Hello <em>world</em> and <div>x</div>.\n";
         let r = render(md, 60, plain(), LayoutName::Minimal, true);
-        let text: String = r.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let text: String = r
+            .lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(!text.contains("<em>"));
         assert!(!text.contains("</em>"));
         assert!(!text.contains("<div>"));

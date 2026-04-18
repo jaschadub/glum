@@ -61,12 +61,12 @@ pub fn is_ssh_session() -> bool {
 /// dependency and to keep the attack surface small — we only ever emit this
 /// into the user's terminal, never parse untrusted input.
 fn base64_encode(input: &[u8]) -> String {
-    const ALPH: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPH: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     let mut i = 0;
     while i + 3 <= input.len() {
-        let n = (u32::from(input[i]) << 16) | (u32::from(input[i + 1]) << 8) | u32::from(input[i + 2]);
+        let n =
+            (u32::from(input[i]) << 16) | (u32::from(input[i + 1]) << 8) | u32::from(input[i + 2]);
         out.push(ALPH[((n >> 18) & 0x3f) as usize] as char);
         out.push(ALPH[((n >> 12) & 0x3f) as usize] as char);
         out.push(ALPH[((n >> 6) & 0x3f) as usize] as char);

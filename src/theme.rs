@@ -197,7 +197,9 @@ impl Theme {
     }
 
     pub fn heading_style(self, level: u8) -> Style {
-        let mut s = Style::default().fg(self.heading).add_modifier(Modifier::BOLD);
+        let mut s = Style::default()
+            .fg(self.heading)
+            .add_modifier(Modifier::BOLD);
         if let Some(bg) = self.bg {
             s = s.bg(bg);
         }

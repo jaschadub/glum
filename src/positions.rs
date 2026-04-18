@@ -57,7 +57,8 @@ impl PositionStore {
     /// Open (creating if needed) the position store.
     pub fn open() -> Result<Self> {
         let dir = state_dir()?;
-        fs::create_dir_all(&dir).with_context(|| format!("creating state dir {}", dir.display()))?;
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("creating state dir {}", dir.display()))?;
         let path = dir.join(STATE_FILE);
         let inner = match fs::read_to_string(&path) {
             Ok(data) => serde_json::from_str::<Store>(&data).unwrap_or_default(),
@@ -89,7 +90,9 @@ impl PositionStore {
         if !self.enabled {
             return Ok(());
         }
-        let Some(key) = key_for(file) else { return Ok(()); };
+        let Some(key) = key_for(file) else {
+            return Ok(());
+        };
         let entry = Entry {
             offset,
             updated_at_unix: now_unix(),
@@ -167,7 +170,12 @@ impl PositionStore {
         if self.inner.positions.len() <= MAX {
             return;
         }
-        let mut entries: Vec<(String, Entry)> = self.inner.positions.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let mut entries: Vec<(String, Entry)> = self
+            .inner
+            .positions
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
         entries.sort_by_key(|(_, e)| e.updated_at_unix);
         let drop = entries.len() - MAX;
         for (k, _) in entries.into_iter().take(drop) {
