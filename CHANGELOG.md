@@ -20,6 +20,9 @@ artifacts on GitHub Releases.
 - `scripts/install.sh` one-liner installer for macOS / Linux with
   SHA-256 verification against the signed checksums.
 - `.github/workflows/release-binaries.yml` — release pipeline.
+- `.github/workflows/publish-crates.yml` — automatic crates.io
+  publish on GitHub Release (with tag/version guard and idempotent
+  re-run behavior).
 - `.github/workflows/test.yml` — clippy + rustfmt + build + test
   matrix across Linux / macOS / Windows.
 - Expanded README covering every runtime toggle (theme / layout /

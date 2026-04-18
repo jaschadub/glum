@@ -1,0 +1,70 @@
+name: Publish to crates.io
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.1.1) — must match Cargo.toml version'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish glum
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # For workflow_dispatch, check out the given tag instead of default.
+          ref: ${{ github.event.inputs.tag || github.sha }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Verify tag matches Cargo.toml version
+        shell: bash
+        run: |
+          tag="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          # Strip the leading 'v' so v0.1.1 compares to 0.1.1.
+          tag_version="${tag#v}"
+          cargo_version=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"([^"]+)".*/\1/')
+          if [ "$tag_version" != "$cargo_version" ]; then
+            echo "::error::Tag $tag (version $tag_version) does not match Cargo.toml version $cargo_version"
+            exit 1
+          fi
+          echo "Tag $tag matches Cargo.toml version $cargo_version"
+
+      - name: Publish to crates.io
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          # Idempotent: if this exact version already exists on crates.io
+          # (e.g. the workflow is re-running after a flaky upload), skip the
+          # publish rather than failing the job. A publish is one-way; the
+          # desired state — "this version is on crates.io" — is already met.
+          output=$(cargo publish 2>&1) || true
+          echo "$output"
+          if echo "$output" | grep -qE "already uploaded|already exists on crates\.io"; then
+            echo "✓ already published — nothing to do"
+            exit 0
+          fi
+          if echo "$output" | grep -qE "Published|Uploading .* to registry"; then
+            echo "✓ publish succeeded"
+            exit 0
+          fi
+          echo "::error::publish did not complete; see log above"
+          exit 1
