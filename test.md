@@ -1,6 +1,6 @@
 # Markdown Cheat Sheet
 
-A single document exercising every markdown feature Tootles renders. Use it to
+A single document exercising every markdown feature Glum renders. Use it to
 sanity-check headings, inline styles, lists, tables, code blocks, quotes,
 links, typography, and search.
 
@@ -71,7 +71,7 @@ Nested quote:
 
 ## Code
 
-Inline: use `let x = 1;` or `pip install tootles` where appropriate.
+Inline: use `let x = 1;` or `pip install glum` where appropriate.
 
 Fenced, no language:
 
@@ -157,7 +157,7 @@ JSON:
 
 ```json
 {
-  "name": "tootles",
+  "name": "glum",
   "version": "0.1.0",
   "features": ["reader", "themes", "search"]
 }
@@ -166,7 +166,7 @@ JSON:
 YAML:
 
 ```yaml
-name: tootles
+name: glum
 version: 0.1.0
 features:
   - reader
@@ -179,7 +179,7 @@ TOML:
 
 ```toml
 [package]
-name = "tootles"
+name = "glum"
 version = "0.1.0"
 
 [dependencies]
@@ -207,7 +207,7 @@ A table with inline code and links:
 
 | Tool     | Language | Repo                                |
 |----------|----------|-------------------------------------|
-| `tootles`| Rust     | [github](https://example.com/toot)  |
+| `glum`| Rust     | [github](https://example.com/toot)  |
 | `glow`   | Go       | [github](https://example.com/glow)  |
 | `mdcat`  | Rust     | [github](https://example.com/mdcat) |
 
@@ -245,7 +245,7 @@ Reference-style link to [Rust][rust-lang] and [another one][rust-lang].
 
 [rust-lang]: https://www.rust-lang.org
 
-An image reference (tootles renders this as a placeholder because TUIs can't
+An image reference (glum renders this as a placeholder because TUIs can't
 show pixels):
 
 ![logo placeholder](https://example.com/logo.png)

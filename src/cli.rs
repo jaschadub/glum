@@ -5,9 +5,9 @@ use clap::{Parser, ValueEnum};
 use crate::layout::LayoutName;
 use crate::theme::ThemeName;
 
-/// Tootles — a reading-focused terminal markdown viewer.
+/// Glum — a reading-focused terminal markdown viewer.
 #[derive(Debug, Parser)]
-#[command(name = "tootles", version, about, long_about = None)]
+#[command(name = "glum", version, about, long_about = None)]
 pub struct Cli {
     /// Path to a markdown file. Pass `-` to read from stdin.
     pub path: PathBuf,
@@ -74,7 +74,7 @@ pub enum AlignArg {
     Center,
     Left,
     /// Anchors the reading column to the right margin. Useful as a column
-    /// placement hint for RTL scripts; note that tootles does not perform
+    /// placement hint for RTL scripts; note that glum does not perform
     /// bidirectional layout — individual RTL glyphs still render in terminal
     /// order unless your terminal itself applies `BiDi`.
     Right,

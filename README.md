@@ -1,9 +1,9 @@
-# tootles
+# glum
 
 A reading-focused terminal markdown viewer — more like "Reader Mode in your
 terminal" than a markdown-as-markdown renderer.
 
-Tootles prioritizes reading *prose* over showing markdown syntax. That means:
+Glum prioritizes reading *prose* over showing markdown syntax. That means:
 
 - Narrow, centered measure (configurable; default 72 columns)
 - Paged scrolling like `less` — space/PgDn to advance, b/PgUp to go back
@@ -25,13 +25,13 @@ or just
 
 ```
 cargo build --release
-./target/release/tootles sample.md
+./target/release/glum sample.md
 ```
 
 ## Usage
 
 ```
-tootles [OPTIONS] <PATH>
+glum [OPTIONS] <PATH>
 
   --measure <N>             column width (20..200, default 72)
   --theme <NAME>            light, dark, sepia, night, plain (default dark)
@@ -48,12 +48,12 @@ Pass `-` as the path to read from stdin.
 Examples:
 
 ```
-tootles README.md                         # just read
-tootles -s needle test.md                 # open, search for "needle"
-tootles -H "Code blocks" test.md          # jump to the "Code blocks" heading
-tootles --toc test.md                     # open with TOC visible
-tootles --theme light --measure 80 foo.md
-tootles -f README.md                      # auto-reload on save while editing
+glum README.md                         # just read
+glum -s needle test.md                 # open, search for "needle"
+glum -H "Code blocks" test.md          # jump to the "Code blocks" heading
+glum --toc test.md                     # open with TOC visible
+glum --theme light --measure 80 foo.md
+glum -f README.md                      # auto-reload on save while editing
 ```
 
 ## Keys
@@ -75,8 +75,8 @@ tootles -f README.md                      # auto-reload on save while editing
 
 ## Position memory
 
-Tootles remembers where you were in each file. State lives at
-`$XDG_STATE_HOME/tootles/positions.json` (or `~/.local/state/tootles/` as
+Glum remembers where you were in each file. State lives at
+`$XDG_STATE_HOME/glum/positions.json` (or `~/.local/state/glum/` as
 fallback). Paths are hashed with SHA-256 before being stored, so the state
 file does not reveal the names of files you've read. Pass `--no-remember`
 to opt out.

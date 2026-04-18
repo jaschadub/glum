@@ -336,6 +336,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "glum"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "dirs",
+ "notify",
+ "pulldown-cmark",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "sha2",
+ "textwrap",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -866,24 +884,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "tootles"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "dirs",
- "notify",
- "pulldown-cmark",
- "ratatui",
- "serde",
- "serde_json",
- "sha2",
- "textwrap",
- "unicode-width 0.2.0",
 ]
 
 [[package]]

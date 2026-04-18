@@ -1,4 +1,4 @@
-# Tootles Sample
+# Glum Sample
 
 A terminal markdown reader that prioritizes *reading prose* over showing markdown-as-markdown.
 

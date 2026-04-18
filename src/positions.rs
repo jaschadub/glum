@@ -1,7 +1,7 @@
 //! Persistent per-file scroll position store.
 //!
-//! Positions live in a single JSON file under `$XDG_STATE_HOME/tootles/` (falling
-//! back to `~/.local/state/tootles/`). Files are keyed by the SHA-256 of their
+//! Positions live in a single JSON file under `$XDG_STATE_HOME/glum/` (falling
+//! back to `~/.local/state/glum/`). Files are keyed by the SHA-256 of their
 //! canonical absolute path; this avoids storing the raw path on disk for
 //! privacy and keeps keys fixed-width.
 //!
@@ -208,10 +208,10 @@ impl PositionStore {
 
 fn state_dir() -> Result<PathBuf> {
     if let Some(dir) = dirs::state_dir() {
-        return Ok(dir.join("tootles"));
+        return Ok(dir.join("glum"));
     }
     if let Some(home) = dirs::home_dir() {
-        return Ok(home.join(".local").join("state").join("tootles"));
+        return Ok(home.join(".local").join("state").join("glum"));
     }
     anyhow::bail!("could not determine a state directory for your platform");
 }
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn disabled_store_noops() {
         let mut s = PositionStore::disabled();
-        let tmp = std::env::temp_dir().join("tootles_disabled_test.md");
+        let tmp = std::env::temp_dir().join("glum_disabled_test.md");
         File::create(&tmp).unwrap();
         assert!(s.set(&tmp, 42).is_ok());
         assert!(s.get(&tmp).is_none());

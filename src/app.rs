@@ -394,7 +394,7 @@ pub fn run(cfg: AppConfig) -> Result<()> {
     // TerminalGuard::drop will restore the terminal whether we succeeded or errored.
     drop(guard);
 
-    // Leave the panic hook in place: tootles is a CLI, main() will exit promptly.
+    // Leave the panic hook in place: glum is a CLI, main() will exit promptly.
     result
 }
 

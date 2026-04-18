@@ -1,21 +1,21 @@
 [package]
-name = "tootles"
+name = "glum"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 description = "A reading-focused terminal markdown viewer"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/tootles-dev/tootles"
+repository = "https://github.com/glum-dev/glum"
 readme = "README.md"
 keywords = ["markdown", "tui", "reader", "cli"]
 categories = ["command-line-utilities", "text-processing"]
 
 [lib]
-name = "tootles_lib"
+name = "glum_lib"
 path = "src/lib.rs"
 
 [[bin]]
-name = "tootles"
+name = "glum"
 path = "src/main.rs"
 
 [dependencies]

@@ -1,6 +1,6 @@
-use tootles_lib::layout::LayoutName;
-use tootles_lib::render::render;
-use tootles_lib::theme::{Theme, ThemeName};
+use glum_lib::layout::LayoutName;
+use glum_lib::render::render;
+use glum_lib::theme::{Theme, ThemeName};
 
 fn plain() -> Theme {
     Theme::resolve(ThemeName::Plain)

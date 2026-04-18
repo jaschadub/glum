@@ -9,12 +9,12 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use tootles_lib::app::{self, Align, InitialState};
-use tootles_lib::cli::Cli;
-use tootles_lib::layout::LayoutName;
-use tootles_lib::positions::PositionStore;
-use tootles_lib::theme::ThemeName;
-use tootles_lib::watch::FileWatcher;
+use glum_lib::app::{self, Align, InitialState};
+use glum_lib::cli::Cli;
+use glum_lib::layout::LayoutName;
+use glum_lib::positions::PositionStore;
+use glum_lib::theme::ThemeName;
+use glum_lib::watch::FileWatcher;
 
 /// Maximum size of a markdown file we'll load. Refuses larger inputs to cap memory use.
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB
@@ -23,7 +23,7 @@ fn main() -> ExitCode {
     match real_main() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("tootles: {e:#}");
+            eprintln!("glum: {e:#}");
             ExitCode::from(1)
         }
     }
@@ -35,14 +35,14 @@ fn real_main() -> Result<()> {
     let (path, source) = load_input(&cli.path)?;
 
     if !io::stdout().is_terminal() {
-        anyhow::bail!("stdout is not a terminal; tootles requires a TTY to render");
+        anyhow::bail!("stdout is not a terminal; glum requires a TTY to render");
     }
 
     let store = if cli.no_remember {
         PositionStore::disabled()
     } else {
         PositionStore::open().unwrap_or_else(|e| {
-            eprintln!("tootles: position store unavailable: {e:#}");
+            eprintln!("glum: position store unavailable: {e:#}");
             PositionStore::disabled()
         })
     };
@@ -83,7 +83,7 @@ fn real_main() -> Result<()> {
         match FileWatcher::start(&path) {
             Ok(w) => Some(w),
             Err(e) => {
-                eprintln!("tootles: --follow unavailable: {e:#}");
+                eprintln!("glum: --follow unavailable: {e:#}");
                 None
             }
         }
