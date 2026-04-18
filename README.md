@@ -10,17 +10,48 @@ wrap rather than truncate; the file scrolls a page at a time like `less`.
 
 ## Install
 
-From crates.io:
+### macOS / Linux — one-liner
 
+```bash
+curl -fsSL https://raw.githubusercontent.com/jaschadub/glum/main/scripts/install.sh | bash
 ```
+
+This downloads the latest signed release archive for your platform, verifies
+its SHA-256, and installs `glum` into `$HOME/.local/bin`. Override the prefix
+with `GLUM_PREFIX=/usr/local`, pin a version with `GLUM_VERSION=v0.1.0`.
+
+### Any platform — via cargo
+
+```bash
 cargo install glum
 ```
 
-From source:
+### Homebrew, apt, winget, etc.
 
-```
+Not yet. Until then use cargo or the one-liner above. On Windows, grab the
+`.zip` from the [releases page](https://github.com/jaschadub/glum/releases)
+or use `cargo install glum`.
+
+### From source
+
+```bash
 cargo build --release
 ./target/release/glum test.md
+```
+
+### Verify a release download
+
+Every release archive and `checksums.txt` is signed with
+[Sigstore cosign](https://docs.sigstore.dev/) via GitHub Actions OIDC
+(keyless). Verify with:
+
+```bash
+cosign verify-blob \
+  --certificate glum-*.pem \
+  --signature glum-*.sig \
+  --certificate-identity-regexp="https://github.com/jaschadub/glum" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  glum-*.tar.gz
 ```
 
 ## Features
