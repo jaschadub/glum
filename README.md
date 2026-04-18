@@ -83,4 +83,6 @@ to opt out.
 
 ## License
 
-MIT OR Apache-2.0
+Apache License, Version 2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+
+Copyright © 2026 Jascha Wanger (<https://jascha.me>).
