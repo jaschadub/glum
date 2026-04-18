@@ -27,6 +27,18 @@ struct Store {
     version: u32,
     #[serde(default)]
     positions: BTreeMap<String, Entry>,
+    /// Last theme the user was reading with. None = never set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    theme: Option<String>,
+    /// Last typographic layout the user was reading with. None = never set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    layout: Option<String>,
+    /// Last column alignment the user was reading with. None = never set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    align: Option<String>,
+    /// Last code-wrap preference (None = never set = default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wrap_code: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -84,6 +96,69 @@ impl PositionStore {
         };
         self.inner.positions.insert(key, entry);
         self.prune();
+        self.flush()
+    }
+
+    /// The last theme name the user was reading with, if any has been stored.
+    pub fn theme(&self) -> Option<&str> {
+        self.inner.theme.as_deref()
+    }
+
+    /// Persist the given theme name as the "last theme". Silently no-ops when
+    /// the store is disabled (--no-remember).
+    pub fn set_theme(&mut self, theme: &str) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.inner.theme.as_deref() == Some(theme) {
+            return Ok(());
+        }
+        self.inner.theme = Some(theme.to_string());
+        self.flush()
+    }
+
+    pub fn layout(&self) -> Option<&str> {
+        self.inner.layout.as_deref()
+    }
+
+    pub fn set_layout(&mut self, layout: &str) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.inner.layout.as_deref() == Some(layout) {
+            return Ok(());
+        }
+        self.inner.layout = Some(layout.to_string());
+        self.flush()
+    }
+
+    pub fn align(&self) -> Option<&str> {
+        self.inner.align.as_deref()
+    }
+
+    pub fn set_align(&mut self, align: &str) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.inner.align.as_deref() == Some(align) {
+            return Ok(());
+        }
+        self.inner.align = Some(align.to_string());
+        self.flush()
+    }
+
+    pub fn wrap_code(&self) -> Option<bool> {
+        self.inner.wrap_code
+    }
+
+    pub fn set_wrap_code(&mut self, wrap: bool) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.inner.wrap_code == Some(wrap) {
+            return Ok(());
+        }
+        self.inner.wrap_code = Some(wrap);
         self.flush()
     }
 
@@ -182,5 +257,30 @@ mod tests {
     #[test]
     fn hex_encoding_is_stable() {
         assert_eq!(hex_encode(&[0x01, 0xab, 0xff]), "01abff");
+    }
+
+    #[test]
+    fn theme_serializes_and_deserializes() {
+        let s = Store {
+            theme: Some("sepia".to_string()),
+            ..Store::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Store = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.theme.as_deref(), Some("sepia"));
+    }
+
+    #[test]
+    fn missing_theme_field_defaults_to_none() {
+        let json = r#"{"version":1,"positions":{}}"#;
+        let s: Store = serde_json::from_str(json).unwrap();
+        assert!(s.theme.is_none());
+    }
+
+    #[test]
+    fn disabled_store_set_theme_noops() {
+        let mut s = PositionStore::disabled();
+        assert!(s.set_theme("sepia").is_ok());
+        assert!(s.theme().is_none());
     }
 }

@@ -33,12 +33,28 @@ cargo build --release
 ```
 tootles [OPTIONS] <PATH>
 
-  --measure <N>       column width (20..200, default 72)
-  --theme <NAME>      light, dark, sepia, night, plain (default dark)
-  --no-remember       don't persist reading position
+  --measure <N>             column width (20..200, default 72)
+  --theme <NAME>            light, dark, sepia, night, plain (default dark)
+  -s, --search <QUERY>      open with search pre-populated; jump to first match
+  -H, --heading <TITLE>     jump to first heading containing TITLE (case-insensitive)
+      --toc                 open with the table of contents overlay visible
+      --reset-position      ignore saved position; start at the top
+      --no-remember         don't persist reading position across runs
+  -f, --follow              re-render when the file changes on disk
 ```
 
 Pass `-` as the path to read from stdin.
+
+Examples:
+
+```
+tootles README.md                         # just read
+tootles -s needle test.md                 # open, search for "needle"
+tootles -H "Code blocks" test.md          # jump to the "Code blocks" heading
+tootles --toc test.md                     # open with TOC visible
+tootles --theme light --measure 80 foo.md
+tootles -f README.md                      # auto-reload on save while editing
+```
 
 ## Keys
 

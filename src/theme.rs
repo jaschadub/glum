@@ -30,6 +30,18 @@ impl ThemeName {
             Self::Plain => "plain",
         }
     }
+
+    /// Parse a label back into a `ThemeName`. Unknown labels return `None`.
+    pub fn from_label(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            "sepia" => Some(Self::Sepia),
+            "night" => Some(Self::Night),
+            "plain" => Some(Self::Plain),
+            _ => None,
+        }
+    }
 }
 
 /// Resolved palette for rendering.

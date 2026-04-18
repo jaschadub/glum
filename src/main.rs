@@ -9,10 +9,12 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use tootles_lib::app;
+use tootles_lib::app::{self, Align, InitialState};
 use tootles_lib::cli::Cli;
+use tootles_lib::layout::LayoutName;
 use tootles_lib::positions::PositionStore;
 use tootles_lib::theme::ThemeName;
+use tootles_lib::watch::FileWatcher;
 
 /// Maximum size of a markdown file we'll load. Refuses larger inputs to cap memory use.
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB
@@ -47,13 +49,65 @@ fn real_main() -> Result<()> {
 
     let display_name = app::display_name_for(&path);
 
+    // Explicit --theme wins. Otherwise fall back to the remembered theme, then
+    // to `dark` on first run.
+    let theme = cli
+        .theme
+        .map(ThemeName::from)
+        .or_else(|| store.theme().and_then(ThemeName::from_label))
+        .unwrap_or(ThemeName::Dark);
+
+    let layout = cli
+        .layout
+        .map(LayoutName::from)
+        .or_else(|| store.layout().and_then(LayoutName::from_label))
+        .unwrap_or(LayoutName::Minimal);
+
+    let align = cli
+        .align
+        .map(Align::from)
+        .or_else(|| store.align().and_then(Align::from_label))
+        .unwrap_or(Align::Center);
+
+    // Default is soft-wrap. --truncate-code flips it off; otherwise the
+    // remembered preference wins, and first-run default is wrap.
+    let wrap_code = if cli.truncate_code {
+        false
+    } else {
+        store.wrap_code().unwrap_or(true)
+    };
+
+    // --follow only makes sense for a real file on disk. For stdin input
+    // (path == "<stdin>") we silently fall through without a watcher.
+    let watcher = if cli.follow && path.as_os_str() != "<stdin>" {
+        match FileWatcher::start(&path) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                eprintln!("tootles: --follow unavailable: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let cfg = app::AppConfig {
         path,
         source,
         measure: cli.measure,
-        theme: ThemeName::from(cli.theme),
+        theme,
+        layout,
+        align,
+        wrap_code,
         store,
         display_name,
+        initial: InitialState {
+            search: cli.search,
+            heading: cli.heading,
+            reset_position: cli.reset_position,
+            open_toc: cli.toc,
+        },
+        watcher,
     };
 
     app::run(cfg)

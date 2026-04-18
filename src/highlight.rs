@@ -233,10 +233,14 @@ static JAVA: Grammar = Grammar {
     fn_call_highlight: true,
 };
 
+/// Peek the next character at byte index `i`, or None at end-of-string.
+fn char_at(line: &str, i: usize) -> Option<char> {
+    line[i..].chars().next()
+}
+
 fn scan(line: &str, g: &'static Grammar, theme: Theme) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let base = theme.code_style();
-    let bytes = line.as_bytes();
     let mut i = 0usize;
 
     // Fast path for comment-only lines.
@@ -252,13 +256,13 @@ fn scan(line: &str, g: &'static Grammar, theme: Theme) -> Vec<Span<'static>> {
         }
     }
 
-    while i < bytes.len() {
+    while i < line.len() {
         // Detect start of comment mid-line.
         let mut matched_comment = false;
         for prefix in g.line_comments {
             if line[i..].starts_with(prefix) {
                 spans.push(Span::styled(line[i..].to_string(), theme.comment_style()));
-                i = bytes.len();
+                i = line.len();
                 matched_comment = true;
                 break;
             }
@@ -267,7 +271,10 @@ fn scan(line: &str, g: &'static Grammar, theme: Theme) -> Vec<Span<'static>> {
             break;
         }
 
-        let ch = bytes[i] as char;
+        // `i` is always on a char boundary: we advance only by whole chars
+        // (`ch.len_utf8()`) or by boundary-preserving offsets from sub-scanners.
+        let Some(ch) = char_at(line, i) else { break };
+        let ch_len = ch.len_utf8();
 
         // String literal.
         if g.strings.contains(&ch) {
@@ -279,7 +286,7 @@ fn scan(line: &str, g: &'static Grammar, theme: Theme) -> Vec<Span<'static>> {
 
         // Number literal.
         if ch.is_ascii_digit()
-            || (ch == '.' && bytes.get(i + 1).is_some_and(|b| (*b as char).is_ascii_digit()))
+            || (ch == '.' && char_at(line, i + 1).is_some_and(|c| c.is_ascii_digit()))
         {
             let (span, end) = read_number(line, i, theme);
             spans.push(span);
@@ -290,39 +297,47 @@ fn scan(line: &str, g: &'static Grammar, theme: Theme) -> Vec<Span<'static>> {
         // Identifier / keyword / type / function-call.
         if is_ident_start(ch) {
             let start = i;
-            while i < bytes.len() && is_ident_continue(bytes[i] as char) {
-                i += 1;
+            let mut j = i;
+            while let Some(c) = char_at(line, j) {
+                if !is_ident_continue(c) {
+                    break;
+                }
+                j += c.len_utf8();
             }
-            let word = &line[start..i];
+            let word = &line[start..j];
             let style = classify_word(word, g, theme);
             let final_style = if g.fn_call_highlight
                 && style == base
-                && bytes.get(i).is_some_and(|b| *b == b'(')
+                && char_at(line, j) == Some('(')
             {
                 theme.fn_style()
             } else {
                 style
             };
             spans.push(Span::styled(word.to_string(), final_style));
+            i = j;
             continue;
         }
 
-        // Otherwise, accumulate default-styled runs until next interesting char.
+        // Otherwise, accumulate default-styled runs until the next interesting char.
         let start = i;
-        while i < bytes.len() {
-            let c = bytes[i] as char;
+        let mut j = i;
+        while let Some(c) = char_at(line, j) {
             if g.strings.contains(&c)
                 || is_ident_start(c)
                 || c.is_ascii_digit()
-                || g.line_comments.iter().any(|p| line[i..].starts_with(*p))
+                || g.line_comments.iter().any(|p| line[j..].starts_with(*p))
             {
                 break;
             }
-            i += 1;
+            j += c.len_utf8();
         }
-        if i > start {
-            spans.push(Span::styled(line[start..i].to_string(), base));
+        if j == start {
+            // No progress — force at least one char of progress to guarantee termination.
+            j = start + ch_len;
         }
+        spans.push(Span::styled(line[start..j].to_string(), base));
+        i = j;
     }
 
     if spans.is_empty() {
@@ -332,65 +347,70 @@ fn scan(line: &str, g: &'static Grammar, theme: Theme) -> Vec<Span<'static>> {
 }
 
 fn read_string(line: &str, start: usize, delim: char, theme: Theme) -> (Span<'static>, usize) {
-    let bytes = line.as_bytes();
-    let mut i = start + 1;
+    let mut i = start + delim.len_utf8();
     let mut escape = false;
-    while i < bytes.len() {
-        let c = bytes[i] as char;
+    while let Some(c) = char_at(line, i) {
+        let cl = c.len_utf8();
         if escape {
             escape = false;
-            i += 1;
+            i += cl;
             continue;
         }
         if c == '\\' {
             escape = true;
-            i += 1;
+            i += cl;
             continue;
         }
         if c == delim {
-            i += 1;
+            i += cl;
             return (
                 Span::styled(line[start..i].to_string(), theme.string_style()),
                 i,
             );
         }
-        i += 1;
+        i += cl;
     }
     // Unterminated on this line — style through end.
     (
         Span::styled(line[start..].to_string(), theme.string_style()),
-        bytes.len(),
+        line.len(),
     )
 }
 
 fn read_number(line: &str, start: usize, theme: Theme) -> (Span<'static>, usize) {
-    let bytes = line.as_bytes();
     let mut i = start;
     let mut saw_dot = false;
     let mut saw_e = false;
     // Hex, oct, bin prefixes.
     if line[i..].starts_with("0x") || line[i..].starts_with("0X") {
         i += 2;
-        while i < bytes.len() && (bytes[i] as char).is_ascii_hexdigit() {
-            i += 1;
+        while let Some(c) = char_at(line, i) {
+            if c.is_ascii_hexdigit() || c == '_' {
+                i += c.len_utf8();
+            } else {
+                break;
+            }
         }
     } else if line[i..].starts_with("0b") || line[i..].starts_with("0B") {
         i += 2;
-        while i < bytes.len() && matches!(bytes[i], b'0' | b'1' | b'_') {
-            i += 1;
+        while let Some(c) = char_at(line, i) {
+            if matches!(c, '0' | '1' | '_') {
+                i += c.len_utf8();
+            } else {
+                break;
+            }
         }
     } else {
-        while i < bytes.len() {
-            let c = bytes[i] as char;
+        while let Some(c) = char_at(line, i) {
             if c.is_ascii_digit() || c == '_' {
-                i += 1;
+                i += c.len_utf8();
             } else if c == '.' && !saw_dot && !saw_e {
                 saw_dot = true;
                 i += 1;
             } else if (c == 'e' || c == 'E') && !saw_e {
                 saw_e = true;
                 i += 1;
-                if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+                if matches!(char_at(line, i), Some('+' | '-')) {
                     i += 1;
                 }
             } else {
@@ -399,8 +419,12 @@ fn read_number(line: &str, start: usize, theme: Theme) -> (Span<'static>, usize)
         }
     }
     // Optional numeric suffix (e.g. 10u32, 1.0f64).
-    while i < bytes.len() && is_ident_continue(bytes[i] as char) {
-        i += 1;
+    while let Some(c) = char_at(line, i) {
+        if is_ident_continue(c) {
+            i += c.len_utf8();
+        } else {
+            break;
+        }
     }
     (
         Span::styled(line[start..i].to_string(), theme.number_style()),
@@ -484,5 +508,30 @@ mod tests {
         let spans = highlight_line("println!(foo())", "rust", plain());
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "println!(foo())");
+    }
+
+    #[test]
+    fn handles_multibyte_chars_without_panicking() {
+        // Ellipsis and em-dash inside code should not crash the scanner.
+        let line = "if let Err(e) = auth::validate_token(token, &state.conf\u{2026}";
+        let spans = highlight_line(line, "rust", plain());
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, line);
+    }
+
+    #[test]
+    fn handles_cjk_and_emoji_in_comments() {
+        let line = "let x = 1; // 日本語 🎉 comment";
+        let spans = highlight_line(line, "rust", plain());
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, line);
+    }
+
+    #[test]
+    fn handles_multibyte_in_string_literal() {
+        let line = r#"let s = "héllo — world";"#;
+        let spans = highlight_line(line, "rust", plain());
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, line);
     }
 }

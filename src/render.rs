@@ -13,13 +13,26 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::highlight::highlight_line;
+use crate::layout::{decorate_heading, LayoutName, RuleSpec};
 use crate::theme::Theme;
 use crate::typography::smarten;
 
-/// A single rendered document, consisting of styled lines plus a table of contents.
+/// A single rendered document, consisting of styled lines plus a table of
+/// contents and a list of code blocks (for clipboard copy).
 pub struct Rendered {
     pub lines: Vec<Line<'static>>,
     pub toc: Vec<TocEntry>,
+    pub code_blocks: Vec<CodeBlockEntry>,
+}
+
+/// A recorded fenced code block: its visual line range in `Rendered::lines`
+/// and the raw (unhighlighted, untruncated) source text.
+#[derive(Debug, Clone)]
+pub struct CodeBlockEntry {
+    pub start_line: usize,
+    pub end_line: usize,
+    pub lang: String,
+    pub code: String,
 }
 
 #[derive(Debug, Clone)]
@@ -31,7 +44,13 @@ pub struct TocEntry {
 }
 
 /// Entry point. Produces styled lines wrapped to `measure` columns.
-pub fn render(md: &str, measure: usize, theme: Theme) -> Rendered {
+pub fn render(
+    md: &str,
+    measure: usize,
+    theme: Theme,
+    layout: LayoutName,
+    wrap_code: bool,
+) -> Rendered {
     let measure = measure.max(20);
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_STRIKETHROUGH);
@@ -40,7 +59,7 @@ pub fn render(md: &str, measure: usize, theme: Theme) -> Rendered {
     opts.insert(Options::ENABLE_TASKLISTS);
 
     let parser = Parser::new_ext(md, opts);
-    let mut r = Renderer::new(measure, theme);
+    let mut r = Renderer::new(measure, theme, layout, wrap_code);
     for event in parser {
         r.handle(event);
     }
@@ -64,8 +83,11 @@ struct ListCtx {
 struct Renderer {
     measure: usize,
     theme: Theme,
+    layout: LayoutName,
+    wrap_code: bool,
     out: Vec<Line<'static>>,
     toc: Vec<TocEntry>,
+    code_blocks: Vec<CodeBlockEntry>,
 
     // Inline accumulation
     runs: Vec<Run>,
@@ -81,8 +103,8 @@ struct Renderer {
     blockquote_depth: usize,
     list_stack: Vec<ListCtx>,
     pending_list_marker: Option<String>,
-    in_link: Option<String>,
-    link_refs: Vec<(String, String)>, // (label, url)
+    /// Active link URL and the `runs` index where the link text began.
+    in_link: Option<(usize, String)>,
 
     // Tables
     in_table_head: bool,
@@ -93,12 +115,15 @@ struct Renderer {
 }
 
 impl Renderer {
-    fn new(measure: usize, theme: Theme) -> Self {
+    fn new(measure: usize, theme: Theme, layout: LayoutName, wrap_code: bool) -> Self {
         Self {
             measure,
             theme,
+            layout,
+            wrap_code,
             out: Vec::new(),
             toc: Vec::new(),
+            code_blocks: Vec::new(),
             runs: Vec::new(),
             style_stack: Vec::new(),
             current_style: theme.base_style(),
@@ -111,7 +136,6 @@ impl Renderer {
             list_stack: Vec::new(),
             pending_list_marker: None,
             in_link: None,
-            link_refs: Vec::new(),
             in_table_head: false,
             in_table_cell: false,
             table_cell_buf: Vec::new(),
@@ -137,7 +161,11 @@ impl Renderer {
             return;
         }
         if self.in_heading.is_some() {
+            // Heading text flushes through `heading_text` on TagEnd::Heading.
+            // It must NOT also land in `runs`, or it leaks into the next
+            // paragraph/list item and appears duplicated.
             self.heading_text.push_str(t);
+            return;
         }
         self.push_run(Run {
             text: t.to_string(),
@@ -145,9 +173,14 @@ impl Renderer {
         });
     }
 
-    /// Route a styled run to either the current table cell or the paragraph buffer.
+    /// Route a styled run to the right buffer for the current block context.
+    /// Headings flatten everything into `heading_text` (styles are applied when
+    /// the heading flushes). Table cells accumulate into their own buffer.
+    /// Otherwise the run joins the paragraph buffer.
     fn push_run(&mut self, run: Run) {
-        if self.in_table_cell {
+        if self.in_heading.is_some() {
+            self.heading_text.push_str(&run.text);
+        } else if self.in_table_cell {
             self.table_cell_buf.push(run);
         } else {
             self.runs.push(run);
@@ -257,7 +290,10 @@ impl Renderer {
             Tag::Strong => self.push_style(|s| s.add_modifier(Modifier::BOLD)),
             Tag::Strikethrough => self.push_style(|s| s.add_modifier(Modifier::CROSSED_OUT)),
             Tag::Link { dest_url, .. } => {
-                self.in_link = Some(dest_url.to_string());
+                // Remember where the link text starts in runs so we can detect
+                // autolinks (where text == URL) at TagEnd::Link and skip the
+                // duplicated inline URL.
+                self.in_link = Some((self.runs.len(), dest_url.to_string()));
                 let ls = self.theme.link_style();
                 self.push_style(|_| ls);
             }
@@ -308,15 +344,6 @@ impl Renderer {
                     HeadingLevel::H6 => 6,
                 };
                 self.pop_style();
-                // Space before heading (unless at doc start).
-                if !self.out.is_empty()
-                    && !self
-                        .out
-                        .last()
-                        .is_some_and(|l| l.width() == 0)
-                {
-                    self.blank();
-                }
                 let start_line = self.out.len();
                 let heading = std::mem::take(&mut self.heading_text);
                 self.flush_heading(n, &heading);
@@ -352,15 +379,31 @@ impl Renderer {
             | TagEnd::Strikethrough => self.pop_style(),
             TagEnd::Link => {
                 self.pop_style();
-                if let Some(url) = self.in_link.take() {
-                    // Inside table cells, don't footnote — inline the label visually.
-                    if !self.in_table_cell {
-                        let n = self.link_refs.len() + 1;
+                if let Some((link_start, url)) = self.in_link.take() {
+                    // Autolink detection: <https://example.com> emits text that
+                    // is identical to the URL. Don't duplicate it.
+                    let link_text: String = self.runs[link_start..]
+                        .iter()
+                        .map(|r| r.text.as_str())
+                        .collect();
+                    // Only show http(s)/mailto URLs inline; omit for relative/anchor
+                    // links which don't make sense in a terminal.
+                    let worth_showing = is_external_url(&url) && link_text.trim() != url.trim();
+                    // Inside table cells we skip inline URLs to keep columns
+                    // compact; the link text still has the underline style.
+                    if worth_showing && !self.in_table_cell {
                         self.push_run(Run {
-                            text: format!("[{n}]"),
+                            text: " (".to_string(),
                             style: self.theme.dim_style(),
                         });
-                        self.link_refs.push((n.to_string(), url));
+                        self.push_run(Run {
+                            text: url,
+                            style: self.theme.dim_style(),
+                        });
+                        self.push_run(Run {
+                            text: ")".to_string(),
+                            style: self.theme.dim_style(),
+                        });
                     }
                 }
             }
@@ -395,17 +438,72 @@ impl Renderer {
     }
 
     fn flush_heading(&mut self, level: u8, text: &str) {
-        let text = smarten(text);
+        let decor = decorate_heading(self.layout, level, self.theme);
         let wrap_width = self.inner_width();
-        let style = self.theme.heading_style(level);
-        for wrapped in textwrap::wrap(&text, wrap_width) {
-            self.out.push(Line::styled(wrapped.into_owned(), style));
+
+        for _ in 0..decor.blank_before {
+            // Avoid stacking multiple blanks when the previous block already
+            // ended with one.
+            if !self
+                .out
+                .last()
+                .is_some_and(|l| l.width() == 0)
+            {
+                self.blank();
+            }
         }
-        if level == 1 {
-            let rule: String = "\u{2500}".repeat(wrap_width.min(self.measure));
-            self.out.push(Line::styled(rule, self.theme.rule_style()));
+
+        if let Some(rule) = decor.top_rule.as_ref() {
+            self.push_full_rule(rule, wrap_width);
         }
-        self.blank();
+
+        let smart = smarten(text);
+        let display_text = if decor.uppercase {
+            smart.to_uppercase()
+        } else {
+            smart
+        };
+        // Indent + prefix budget cuts into the wrap width so prefixed long
+        // headings don't blow past the measure.
+        let prefix_w = unicode_width::UnicodeWidthStr::width(decor.prefix.as_str());
+        let body_width = wrap_width
+            .saturating_sub(decor.indent + prefix_w)
+            .max(10);
+        let wrapped_lines: Vec<String> = textwrap::wrap(&display_text, body_width)
+            .into_iter()
+            .map(|s| s.into_owned())
+            .collect();
+
+        let indent_str = " ".repeat(decor.indent);
+        let base = self.theme.base_style();
+        for (i, line) in wrapped_lines.iter().enumerate() {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if decor.indent > 0 {
+                spans.push(Span::styled(indent_str.clone(), base));
+            }
+            // Prefix only on the first line; continuation lines align under
+            // the heading text, not the prefix.
+            if i == 0 && !decor.prefix.is_empty() {
+                spans.push(Span::styled(decor.prefix.clone(), decor.style));
+            } else if i > 0 && !decor.prefix.is_empty() {
+                spans.push(Span::styled(" ".repeat(prefix_w), base));
+            }
+            spans.push(Span::styled(line.clone(), decor.style));
+            self.out.push(Line::from(spans).style(base));
+        }
+
+        if let Some(rule) = decor.bottom_rule.as_ref() {
+            self.push_full_rule(rule, wrap_width);
+        }
+
+        for _ in 0..decor.blank_after {
+            self.blank();
+        }
+    }
+
+    fn push_full_rule(&mut self, rule: &RuleSpec, width: usize) {
+        let s: String = rule.ch.to_string().repeat(width);
+        self.out.push(Line::styled(s, rule.style));
     }
 
     fn flush_paragraph(&mut self) {
@@ -579,29 +677,163 @@ impl Renderer {
     }
 
     fn flush_code_block(&mut self) {
-        let gutter = "\u{2502} "; // │
-        let gutter_style = self.theme.dim_style();
-        let inner = self.inner_width().saturating_sub(2);
+        // Code blocks render with top + bottom rules only, no side borders.
+        // Side borders would get picked up by terminal mouse selection and
+        // pollute pasted code, so we keep the rules plus the `code_bg` fill
+        // for visual separation and let the content be cleanly copyable.
+        //
+        //   ─── rust ───────────────────────── ⎘ y ───
+        //    fn main() {
+        //        println!("hi");
+        //    }
+        //   ──────────────────────────────────────────
+        //
+        // The `⎘ y` copy-hint is only shown when OSC 52 has a reasonable
+        // chance of reaching the clipboard (i.e. not an SSH session, where
+        // tmux/forwarding often strips the escape sequence).
         let code = std::mem::take(&mut self.code_buf);
         let lang = std::mem::take(&mut self.code_lang);
+        let lang_label = lang
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .next()
+            .unwrap_or("")
+            .to_string();
+
+        let width = self.inner_width();
+        // One-column left padding keeps code slightly inset so the block
+        // reads as distinct. Mouse-selecting will grab the leading space,
+        // which is harmless in pasted code.
+        let left_pad = 1usize;
+        let code_cols = width.saturating_sub(left_pad).max(1);
+
+        let rule_style = self.theme.rule_style();
+        let pad_style = self.theme.code_style();
+        let label_style = self.theme.dim_style();
+        let base_style = self.theme.base_style();
+
+        let show_copy_hint = !crate::clipboard::is_ssh_session();
+        let copy_hint = " \u{2398} y ";
+        let copy_hint_w = if show_copy_hint {
+            unicode_width::UnicodeWidthStr::width(copy_hint)
+        } else {
+            0
+        };
+
+        // Top rule with optional language label and optional copy hint.
+        let mut top_spans: Vec<Span<'static>> = Vec::new();
+        if lang_label.is_empty() {
+            let dashes_w = width.saturating_sub(copy_hint_w);
+            top_spans.push(Span::styled("\u{2500}".repeat(dashes_w), rule_style));
+            if show_copy_hint {
+                top_spans.push(Span::styled(copy_hint.to_string(), label_style));
+            }
+        } else {
+            let lbl = format!(" {lang_label} ");
+            let lbl_w = unicode_width::UnicodeWidthStr::width(lbl.as_str());
+            let leading_w = 3;
+            let mid_w = width
+                .saturating_sub(leading_w + lbl_w + copy_hint_w)
+                .max(1);
+            top_spans.push(Span::styled("\u{2500}".repeat(leading_w), rule_style));
+            top_spans.push(Span::styled(lbl, label_style));
+            top_spans.push(Span::styled("\u{2500}".repeat(mid_w), rule_style));
+            if show_copy_hint {
+                top_spans.push(Span::styled(copy_hint.to_string(), label_style));
+            }
+        }
+        let start_line = self.out.len();
+        self.out.push(Line::from(top_spans).style(base_style));
+
+        let pad_str = " ".repeat(left_pad);
         let trimmed = code.trim_end_matches('\n');
+        // Continuation lines of a soft-wrapped code line start with a small
+        // dim arrow so the reader can tell the line is wrapped rather than
+        // a genuine new code line.
+        let cont_marker = " \u{21AA} "; //  ↪
+        let cont_w = unicode_width::UnicodeWidthStr::width(cont_marker);
+
         for raw_line in trimmed.split('\n') {
             let normalized = raw_line.replace('\t', "    ");
-            // Truncate for display so a single long code line can't break layout.
-            let visible = truncate_to_width(&normalized, inner);
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            spans.push(Span::styled(gutter.to_string(), gutter_style));
-            let mut tokens = highlight_line(&visible, &lang, self.theme);
-            spans.append(&mut tokens);
-            self.out.push(Line::from(spans).style(self.theme.base_style()));
+            let line_w = unicode_width::UnicodeWidthStr::width(normalized.as_str());
+
+            // Three cases:
+            //   1. Fits in code_cols → render as-is.
+            //   2. Too long + wrap_code on → split into chunks and emit
+            //      multiple visual lines with a continuation marker.
+            //   3. Too long + wrap_code off → truncate with `…`.
+            if line_w <= code_cols {
+                self.push_code_line(&pad_str, &normalized, code_cols, &lang, pad_style, base_style);
+                continue;
+            }
+
+            if self.wrap_code {
+                // First chunk occupies the full width; continuations lose
+                // `cont_w` columns to the marker.
+                let first_chunk_w = code_cols;
+                let cont_chunk_w = code_cols.saturating_sub(cont_w).max(1);
+                let chunks = wrap_code_line(&normalized, first_chunk_w, cont_chunk_w);
+                for (i, chunk) in chunks.iter().enumerate() {
+                    if i == 0 {
+                        self.push_code_line(&pad_str, chunk, code_cols, &lang, pad_style, base_style);
+                    } else {
+                        // Render: <pad><cont_marker><highlighted chunk><trailing pad>
+                        let chunk_w = unicode_width::UnicodeWidthStr::width(chunk.as_str());
+                        let trailing = code_cols
+                            .saturating_sub(cont_w)
+                            .saturating_sub(chunk_w);
+                        let mut spans: Vec<Span<'static>> = Vec::new();
+                        spans.push(Span::styled(pad_str.clone(), pad_style));
+                        spans.push(Span::styled(cont_marker.to_string(), label_style));
+                        spans.extend(highlight_line(chunk, &lang, self.theme));
+                        if trailing > 0 {
+                            spans.push(Span::styled(" ".repeat(trailing), pad_style));
+                        }
+                        self.out.push(Line::from(spans).style(base_style));
+                    }
+                }
+            } else {
+                let visible = truncate_to_width(&normalized, code_cols);
+                self.push_code_line(&pad_str, &visible, code_cols, &lang, pad_style, base_style);
+            }
         }
+
+        self.out.push(Line::styled("\u{2500}".repeat(width), rule_style));
+
+        let end_line = self.out.len() - 1;
+        self.code_blocks.push(CodeBlockEntry {
+            start_line,
+            end_line,
+            lang: lang_label,
+            code: code.trim_end_matches('\n').to_string(),
+        });
+    }
+
+    /// Render one code line (already known to fit within `width`) with the
+    /// left pad, highlighted tokens, and trailing code-bg fill.
+    fn push_code_line(
+        &mut self,
+        pad: &str,
+        text: &str,
+        width: usize,
+        lang: &str,
+        pad_style: Style,
+        base_style: Style,
+    ) {
+        let content_w = unicode_width::UnicodeWidthStr::width(text);
+        let trailing = width.saturating_sub(content_w);
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.push(Span::styled(pad.to_string(), pad_style));
+        spans.extend(highlight_line(text, lang, self.theme));
+        if trailing > 0 {
+            spans.push(Span::styled(" ".repeat(trailing), pad_style));
+        }
+        self.out.push(Line::from(spans).style(base_style));
     }
 
     fn flush_table(&mut self) {
         if self.table_head.is_empty() && self.table_rows.is_empty() {
             return;
         }
-        // Render table as plain text rows separated by " | ", wrapped overall.
         let cell_to_text = |cell: &[Run]| -> String {
             let mut s = String::new();
             for r in cell {
@@ -616,68 +848,77 @@ impl Renderer {
             .map(|row| row.iter().map(|c| cell_to_text(c)).collect())
             .collect();
 
-        let all_rows = std::iter::once(head.clone()).chain(rows.iter().cloned());
-        let col_count = head.len().max(rows.iter().map(std::vec::Vec::len).max().unwrap_or(0));
+        let col_count = head
+            .len()
+            .max(rows.iter().map(std::vec::Vec::len).max().unwrap_or(0));
         if col_count == 0 {
             return;
         }
-        let mut widths = vec![0usize; col_count];
-        for row in all_rows {
-            for (i, cell) in row.iter().enumerate() {
-                if i < col_count {
-                    let w = unicode_width::UnicodeWidthStr::width(cell.as_str());
-                    widths[i] = widths[i].max(w);
-                }
-            }
-        }
-        let total_width: usize = widths.iter().sum::<usize>() + 3 * col_count.saturating_sub(1);
-        let inner = self.inner_width();
-        if total_width > inner {
-            // Scale down proportionally.
-            let factor = inner as f64 / total_width.max(1) as f64;
-            for w in &mut widths {
-                *w = ((*w as f64) * factor).floor().max(3.0) as usize;
-            }
-        }
 
-        let render_row = |row: &[String], widths: &[usize], style: Style, theme: Theme| -> Line<'static> {
-            let mut spans = Vec::new();
+        let inner = self.inner_width();
+        let widths = compute_column_widths(&head, &rows, col_count, inner);
+
+        let theme = self.theme;
+        let head_style = theme.base_style().add_modifier(Modifier::BOLD);
+        let body_style = theme.base_style();
+        let sep_style = theme.dim_style();
+        let rule_style = theme.rule_style();
+
+        // Wrap every row up front so we know whether any row spans multiple
+        // visual lines. If so, draw a thin separator between body rows to
+        // keep row boundaries legible when cells wrap.
+        let head_wrapped = if head.is_empty() {
+            Vec::new()
+        } else {
+            render_wrapped_row(&head, &widths, head_style, sep_style, body_style)
+        };
+        let body_wrapped: Vec<Vec<Line<'static>>> = rows
+            .iter()
+            .map(|row| render_wrapped_row(row, &widths, body_style, sep_style, body_style))
+            .collect();
+
+        let any_wrapping_row = body_wrapped.iter().any(|r| r.len() > 1)
+            || head_wrapped.len() > 1;
+
+        let heavy_sep = {
+            let mut s = String::new();
             for (i, w) in widths.iter().enumerate() {
-                let text = row.get(i).cloned().unwrap_or_default();
-                let truncated = truncate_to_width(&text, *w);
-                let pad = w.saturating_sub(unicode_width::UnicodeWidthStr::width(truncated.as_str()));
-                spans.push(Span::styled(truncated, style));
-                if pad > 0 {
-                    spans.push(Span::styled(" ".repeat(pad), theme.base_style()));
-                }
+                s.push_str(&"\u{2500}".repeat(*w));
                 if i + 1 < widths.len() {
-                    spans.push(Span::styled(" \u{2502} ".to_string(), theme.dim_style()));
+                    s.push_str("\u{2500}\u{253C}\u{2500}");
                 }
             }
-            Line::from(spans).style(theme.base_style())
+            s
+        };
+        // Light row separator uses `╌` when available so row splits read as
+        // lighter than the header rule.
+        let light_sep = {
+            let mut s = String::new();
+            for (i, w) in widths.iter().enumerate() {
+                s.push_str(&"\u{254C}".repeat(*w));
+                if i + 1 < widths.len() {
+                    s.push_str("\u{254C}\u{253C}\u{254C}");
+                }
+            }
+            s
         };
 
-        let head_style = self
-            .theme
-            .base_style()
-            .add_modifier(Modifier::BOLD);
-        if !head.is_empty() {
-            self.out.push(render_row(&head, &widths, head_style, self.theme));
-            let sep: String = widths
-                .iter()
-                .enumerate()
-                .map(|(i, w)| {
-                    let mut s = "\u{2500}".repeat(*w);
-                    if i + 1 < widths.len() {
-                        s.push_str("\u{2500}\u{253C}\u{2500}");
-                    }
-                    s
-                })
-                .collect();
-            self.out.push(Line::styled(sep, self.theme.rule_style()));
+        // Render header rows (one logical row may wrap into multiple visual lines).
+        if !head_wrapped.is_empty() {
+            for line in head_wrapped {
+                self.out.push(line);
+            }
+            self.out.push(Line::styled(heavy_sep, rule_style));
         }
-        for row in &rows {
-            self.out.push(render_row(row, &widths, self.theme.base_style(), self.theme));
+
+        let last_idx = body_wrapped.len().saturating_sub(1);
+        for (row_idx, row_lines) in body_wrapped.into_iter().enumerate() {
+            for line in row_lines {
+                self.out.push(line);
+            }
+            if any_wrapping_row && row_idx != last_idx {
+                self.out.push(Line::styled(light_sep.clone(), sep_style));
+            }
         }
     }
 
@@ -697,32 +938,163 @@ impl Renderer {
         // Flush anything dangling.
         self.flush_paragraph();
 
-        // If there were any links, emit them as a footnote list at the end.
-        if !self.link_refs.is_empty() {
-            self.blank();
-            self.out.push(Line::styled(
-                "Links".to_string(),
-                self.theme.heading_style(3),
-            ));
-            self.blank();
-            let refs = std::mem::take(&mut self.link_refs);
-            for (n, url) in refs {
-                let label = format!("[{n}] ");
-                let label_style = self.theme.dim_style();
-                let link_style = self.theme.link_style();
-                let spans = vec![
-                    Span::styled(label, label_style),
-                    Span::styled(url, link_style),
-                ];
-                self.out.push(Line::from(spans).style(self.theme.base_style()));
-            }
-        }
-
         Rendered {
             lines: self.out,
             toc: self.toc,
+            code_blocks: self.code_blocks,
         }
     }
+}
+
+/// Compute column widths that fit within `total` columns. Start from each
+/// column's natural max width (longest cell), reserve 3 cols per separator, and
+/// if the sum exceeds the available space, shrink columns iteratively until
+/// everything fits — always shrinking the currently-widest column. This keeps
+/// narrow columns intact and compresses long prose columns instead of
+/// chopping every column proportionally.
+fn compute_column_widths(
+    head: &[String],
+    rows: &[Vec<String>],
+    col_count: usize,
+    total: usize,
+) -> Vec<usize> {
+    const MIN_COL: usize = 6;
+
+    let mut widths = vec![0usize; col_count];
+    for row in std::iter::once(head).chain(rows.iter().map(std::vec::Vec::as_slice)) {
+        for (i, cell) in row.iter().enumerate() {
+            if i < col_count {
+                let w = cell
+                    .split('\n')
+                    .map(unicode_width::UnicodeWidthStr::width)
+                    .max()
+                    .unwrap_or(0);
+                widths[i] = widths[i].max(w);
+            }
+        }
+    }
+    let sep_cost = 3 * col_count.saturating_sub(1);
+    let budget = total.saturating_sub(sep_cost);
+
+    // Bottom-out: if we can't give MIN_COL to every column, distribute as
+    // evenly as we can and let textwrap hard-break if necessary.
+    let min_total = MIN_COL * col_count;
+    if budget < min_total {
+        let each = (budget / col_count).max(1);
+        return vec![each; col_count];
+    }
+
+    // Shrink the widest column one unit at a time until we fit.
+    while widths.iter().sum::<usize>() > budget {
+        let Some((i, _)) = widths.iter().enumerate().max_by_key(|(_, w)| **w) else {
+            break;
+        };
+        if widths[i] <= MIN_COL {
+            break;
+        }
+        widths[i] -= 1;
+    }
+    widths
+}
+
+/// Render one logical table row as one or more visual lines by wrapping each
+/// cell to its column width. Short cells are padded with blank lines so the
+/// `│` separators align across the whole logical row.
+fn render_wrapped_row(
+    row: &[String],
+    widths: &[usize],
+    text_style: Style,
+    sep_style: Style,
+    fill_style: Style,
+) -> Vec<Line<'static>> {
+    // Wrap each cell into a vec of lines.
+    let wrapped: Vec<Vec<String>> = widths
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let cell = row.get(i).cloned().unwrap_or_default();
+            if cell.is_empty() {
+                return vec![String::new()];
+            }
+            let mut out: Vec<String> = Vec::new();
+            // Respect explicit newlines in the cell first, then wrap each segment.
+            for segment in cell.split('\n') {
+                if segment.is_empty() {
+                    out.push(String::new());
+                    continue;
+                }
+                let opts = textwrap::Options::new(*w).break_words(true);
+                for wrapped_line in textwrap::wrap(segment, &opts) {
+                    out.push(wrapped_line.into_owned());
+                }
+            }
+            if out.is_empty() {
+                out.push(String::new());
+            }
+            out
+        })
+        .collect();
+
+    let row_height = wrapped.iter().map(std::vec::Vec::len).max().unwrap_or(1);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(row_height);
+    for line_idx in 0..row_height {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (i, w) in widths.iter().enumerate() {
+            let text = wrapped[i].get(line_idx).cloned().unwrap_or_default();
+            let truncated = truncate_to_width(&text, *w);
+            let pad = w.saturating_sub(unicode_width::UnicodeWidthStr::width(truncated.as_str()));
+            spans.push(Span::styled(truncated, text_style));
+            if pad > 0 {
+                spans.push(Span::styled(" ".repeat(pad), fill_style));
+            }
+            if i + 1 < widths.len() {
+                spans.push(Span::styled(" \u{2502} ".to_string(), sep_style));
+            }
+        }
+        lines.push(Line::from(spans).style(fill_style));
+    }
+    lines
+}
+
+/// Split a code line into column-sized chunks. Unlike prose wrapping, code
+/// wrapping must be *column*-bounded (not word-bounded) — a single token can
+/// easily be longer than the column, and breaking on whitespace would leave
+/// the tail trailing past the right edge. We walk char-by-char counting
+/// display width (CJK, emoji) and emit chunks when we hit the budget.
+///
+/// The first chunk uses `first_w`; subsequent chunks use `rest_w` (which is
+/// narrower to make room for the continuation marker).
+fn wrap_code_line(line: &str, first_w: usize, rest_w: usize) -> Vec<String> {
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0usize;
+    let mut budget = first_w.max(1);
+
+    for ch in line.chars() {
+        let ch_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if current_w + ch_w > budget && !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+            current_w = 0;
+            budget = rest_w.max(1);
+        }
+        current.push(ch);
+        current_w += ch_w;
+    }
+    if !current.is_empty() || out.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// A link URL is "external" if it has a scheme we can plausibly click in a
+/// terminal: http, https, or mailto. In-document anchors (`#section`),
+/// relative paths, and unknown schemes are not shown inline.
+fn is_external_url(url: &str) -> bool {
+    let u = url.trim().to_ascii_lowercase();
+    u.starts_with("http://") || u.starts_with("https://") || u.starts_with("mailto:")
 }
 
 fn truncate_to_width(s: &str, max_cols: usize) -> String {
@@ -758,7 +1130,7 @@ mod tests {
 
     #[test]
     fn renders_paragraph() {
-        let r = render("Hello world.", 40, plain());
+        let r = render("Hello world.", 40, plain(), LayoutName::Minimal, true);
         assert!(!r.lines.is_empty());
         assert!(r.lines[0].width() > 0);
     }
@@ -766,7 +1138,7 @@ mod tests {
     #[test]
     fn wraps_long_paragraph() {
         let text = "word ".repeat(50);
-        let r = render(&text, 20, plain());
+        let r = render(&text, 20, plain(), LayoutName::Minimal, true);
         assert!(r.lines.len() > 2);
         for line in &r.lines {
             assert!(line.width() <= 20 + 1, "line too wide: {}", line.width());
@@ -776,7 +1148,7 @@ mod tests {
     #[test]
     fn headings_in_toc() {
         let md = "# Top\n\nSome text.\n\n## Sub\n\nMore.\n";
-        let r = render(md, 60, plain());
+        let r = render(md, 60, plain(), LayoutName::Minimal, true);
         assert_eq!(r.toc.len(), 2);
         assert_eq!(r.toc[0].title, "Top");
         assert_eq!(r.toc[0].level, 1);
@@ -786,7 +1158,7 @@ mod tests {
     #[test]
     fn code_blocks_render() {
         let md = "```\nfn main() {}\n```\n";
-        let r = render(md, 60, plain());
+        let r = render(md, 60, plain(), LayoutName::Minimal, true);
         let any_code_line = r.lines.iter().any(|l| l.to_string().contains("fn main"));
         assert!(any_code_line);
     }
@@ -794,24 +1166,61 @@ mod tests {
     #[test]
     fn lists_use_bullet() {
         let md = "- one\n- two\n";
-        let r = render(md, 60, plain());
+        let r = render(md, 60, plain(), LayoutName::Minimal, true);
         let text: String = r.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(text.contains("\u{2022}"), "expected bullet in: {text}");
     }
 
     #[test]
-    fn links_become_footnotes() {
+    fn links_inline_url_after_text() {
         let md = "See [here](https://example.com) for details.\n";
-        let r = render(md, 60, plain());
-        let text: String = r.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("https://example.com"));
-        assert!(text.contains("[1]"));
+        let r = render(md, 60, plain(), LayoutName::Minimal, true);
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Link text is rendered, and the URL appears inline in parentheses.
+        assert!(text.contains("here"));
+        assert!(text.contains("(https://example.com)"));
+        // No footnote markers anymore.
+        assert!(!text.contains("[1]"));
+        assert!(!text.to_lowercase().contains("\nlinks\n"));
+    }
+
+    #[test]
+    fn autolinks_do_not_duplicate_url() {
+        let md = "Visit <https://example.com> today.\n";
+        let r = render(md, 80, plain(), LayoutName::Minimal, true);
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        // The bare URL appears exactly once, not as "url (url)".
+        assert_eq!(text.matches("https://example.com").count(), 1, "text was:\n{text}");
+    }
+
+    #[test]
+    fn relative_links_do_not_show_inline_url() {
+        let md = "See [the section](#intro) for details.\n";
+        let r = render(md, 80, plain(), LayoutName::Minimal, true);
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.contains("#intro"), "anchor link should not render inline: {text}");
+        assert!(text.contains("the section"));
     }
 
     #[test]
     fn tables_render_header_and_rows() {
         let md = "| A | B |\n|---|---|\n| one | two |\n| three | four |\n";
-        let r = render(md, 80, plain());
+        let r = render(md, 80, plain(), LayoutName::Minimal, true);
         let text: String = r.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         for s in ["A", "B", "one", "two", "three", "four"] {
             assert!(text.contains(s), "expected `{s}` in rendered table:\n{text}");
@@ -819,9 +1228,78 @@ mod tests {
     }
 
     #[test]
+    fn tables_insert_row_separators_when_rows_wrap() {
+        let md = "\
+| id | description |
+|----|-------------|
+| a | one two three four five six seven eight nine ten |
+| b | short |
+";
+        let r = render(md, 40, plain(), LayoutName::Minimal, true);
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        // A light ╌ separator must appear between the two body rows.
+        assert!(
+            text.contains('\u{254C}'),
+            "expected light row separator when any row wraps:\n{text}"
+        );
+    }
+
+    #[test]
+    fn compact_tables_have_no_row_separators() {
+        let md = "\
+| A | B |
+|---|---|
+| 1 | 2 |
+| 3 | 4 |
+";
+        let r = render(md, 80, plain(), LayoutName::Minimal, true);
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !text.contains('\u{254C}'),
+            "no row separator expected for single-line rows:\n{text}"
+        );
+    }
+
+    #[test]
+    fn tables_wrap_long_cells_instead_of_truncating() {
+        let md = "| id | description |\n|----|-------------|\n| a | one two three four five six seven eight nine ten |\n";
+        let r = render(md, 40, plain(), LayoutName::Minimal, true);
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        // All ten content words must appear somewhere — nothing gets dropped.
+        for w in [
+            "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        ] {
+            assert!(text.contains(w), "word {w} missing in:\n{text}");
+        }
+        // Wrapped into multiple visual rows: at least one line has the
+        // separator but not the id 'a' (continuation of the description cell).
+        let any_continuation = r
+            .lines
+            .iter()
+            .map(Line::to_string)
+            .any(|l| l.contains('\u{2502}') && !l.contains(" a "));
+        assert!(any_continuation, "expected cell content to wrap onto continuation lines:\n{text}");
+    }
+
+    #[test]
     fn tables_with_inline_code_cells() {
         let md = "| name | value |\n|------|-------|\n| `x` | 1 |\n";
-        let r = render(md, 80, plain());
+        let r = render(md, 80, plain(), LayoutName::Minimal, true);
         let text: String = r.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         // The inline-code text "x" should be in the cell (same line as "name" row
         // content), and NOT appear as a stray post-table paragraph.
@@ -840,15 +1318,48 @@ mod tests {
     #[test]
     fn blockquote_has_gutter() {
         let md = "> quoted.\n";
-        let r = render(md, 60, plain());
+        let r = render(md, 60, plain(), LayoutName::Minimal, true);
         let text: String = r.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(text.contains("\u{2502}"));
     }
 
     #[test]
+    fn heading_text_does_not_leak_into_following_paragraph() {
+        let md = "### C-3. panics in enterprise context compaction\n\n- **C-3.** `todo!()` panics in enterprise context compaction\n";
+        let r = render(md, 80, plain(), LayoutName::Minimal, true);
+        let lines: Vec<String> = r.lines.iter().map(ToString::to_string).collect();
+        // First rendered non-empty line should be the heading text, clean.
+        let heading_line = lines.iter().find(|l| !l.trim().is_empty()).unwrap();
+        assert_eq!(heading_line.trim(), "C-3. panics in enterprise context compaction");
+
+        // The bullet line must contain the item's body exactly once, with no
+        // leading copy of the heading text.
+        let bullet_line = lines
+            .iter()
+            .find(|l| l.contains('\u{2022}'))
+            .expect("bullet line not found");
+        // The heading text should not appear on the bullet line.
+        assert!(
+            !bullet_line.contains("C-3. panics in enterprise context compaction"),
+            "heading text leaked into bullet: {bullet_line}"
+        );
+        assert!(bullet_line.contains("todo!()"));
+    }
+
+    #[test]
+    fn heading_with_inline_code_does_not_leak() {
+        let md = "### A `todo!()` heading\n\nBody paragraph.\n";
+        let r = render(md, 60, plain(), LayoutName::Minimal, true);
+        let lines: Vec<String> = r.lines.iter().map(ToString::to_string).collect();
+        let body = lines.iter().find(|l| l.contains("Body")).unwrap();
+        assert!(!body.contains("todo!()"), "heading code leaked: {body}");
+        assert!(!body.contains("heading"), "heading text leaked: {body}");
+    }
+
+    #[test]
     fn smart_substitution_preserves_text() {
         let md = "He said \"yes\" -- probably...\n";
-        let r = render(md, 60, plain());
+        let r = render(md, 60, plain(), LayoutName::Minimal, true);
         let text: String = r.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         assert!(text.contains("\u{201C}yes\u{201D}"));
         assert!(text.contains("\u{2014}"));
@@ -858,7 +1369,7 @@ mod tests {
     #[test]
     fn html_tags_are_hidden() {
         let md = "Hello <em>world</em> and <div>x</div>.\n";
-        let r = render(md, 60, plain());
+        let r = render(md, 60, plain(), LayoutName::Minimal, true);
         let text: String = r.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(!text.contains("<em>"));
         assert!(!text.contains("</em>"));
