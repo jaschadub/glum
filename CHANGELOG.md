@@ -4,6 +4,34 @@ All notable changes to glum are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-04-18
+
+First release with pre-built binaries and a curl-install one-liner.
+Code is functionally identical to 0.1.0; this release exists to kick
+off the release-binaries CI pipeline and produce signed binary
+artifacts on GitHub Releases.
+
+### Added
+
+- Pre-built binaries for x86_64/aarch64 Linux, x86_64/aarch64 macOS,
+  and x86_64 Windows, attached to the GitHub Release.
+- Sigstore cosign signatures (keyless GitHub OIDC) on every archive
+  plus a signed `checksums.txt`.
+- `scripts/install.sh` one-liner installer for macOS / Linux with
+  SHA-256 verification against the signed checksums.
+- `.github/workflows/release-binaries.yml` — release pipeline.
+- `.github/workflows/test.yml` — clippy + rustfmt + build + test
+  matrix across Linux / macOS / Windows.
+- Expanded README covering every runtime toggle (theme / layout /
+  align / code-wrap) and install path.
+
+### Fixed
+
+- Applied `cargo fmt` across the codebase so the CI fmt-check step
+  stays green.
+
+[0.1.1]: https://github.com/jaschadub/glum/releases/tag/v0.1.1
+
 ## [0.1.0] — 2026-04-18
 
 First public release. Published to crates.io.
