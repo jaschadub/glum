@@ -384,9 +384,13 @@ impl Renderer {
                         .iter()
                         .map(|r| r.text.as_str())
                         .collect();
-                    // Only show http(s)/mailto URLs inline; omit for relative/anchor
-                    // links which don't make sense in a terminal.
-                    let worth_showing = is_external_url(&url) && link_text.trim() != url.trim();
+                    // Show URLs inline for http(s)/mailto and for relative file
+                    // references (e.g. `README.es.md`, `docs/foo.md`, `LICENSE`),
+                    // since the path is the only cue that the text is a link to
+                    // another file. Hide them for in-document anchors (`#section`),
+                    // which add no information beyond the link text.
+                    let worth_showing =
+                        is_inline_worthy_url(&url) && link_text.trim() != url.trim();
                     // Inside table cells we skip inline URLs to keep columns
                     // compact; the link text still has the underline style.
                     if worth_showing && !self.in_table_cell {
@@ -1104,6 +1108,32 @@ fn is_external_url(url: &str) -> bool {
     u.starts_with("http://") || u.starts_with("https://") || u.starts_with("mailto:")
 }
 
+/// Whether to render the URL inline next to the link text. True for external
+/// URLs and for relative file references (which encode the only hint of where
+/// the link points). False for in-document anchors and unsupported schemes
+/// like `javascript:` / `data:`.
+fn is_inline_worthy_url(url: &str) -> bool {
+    let u = url.trim();
+    if u.is_empty() || u.starts_with('#') {
+        return false;
+    }
+    if is_external_url(u) {
+        return true;
+    }
+    let lower = u.to_ascii_lowercase();
+    // Block known non-navigable schemes. Anything else without a scheme is a
+    // relative path (file reference), which is worth showing.
+    for bad in ["javascript:", "data:", "vbscript:", "file:"] {
+        if lower.starts_with(bad) {
+            return false;
+        }
+    }
+    // Treat strings containing "://" but not matched above as foreign schemes
+    // we can't usefully click — still show them, since hiding makes the text
+    // ambiguous, but the user gets the URL to copy.
+    true
+}
+
 fn truncate_to_width(s: &str, max_cols: usize) -> String {
     let mut out = String::new();
     let mut width = 0;
@@ -1220,7 +1250,7 @@ mod tests {
     }
 
     #[test]
-    fn relative_links_do_not_show_inline_url() {
+    fn anchor_links_do_not_show_inline_url() {
         let md = "See [the section](#intro) for details.\n";
         let r = render(md, 80, plain(), LayoutName::Minimal, true);
         let text: String = r
@@ -1234,6 +1264,29 @@ mod tests {
             "anchor link should not render inline: {text}"
         );
         assert!(text.contains("the section"));
+    }
+
+    #[test]
+    fn relative_file_links_show_inline_url() {
+        // Translation links and similar relative file references — the path is
+        // the only cue that the text points to another file. We render the URL
+        // inline so the reader can see (and the terminal can hyperlink) it.
+        let md = "[Español](README.es.md) | [中文](README.zh-cn.md)\n";
+        let r = render(md, 80, plain(), LayoutName::Minimal, true);
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("(README.es.md)"),
+            "relative file link should render its URL inline: {text}"
+        );
+        assert!(
+            text.contains("(README.zh-cn.md)"),
+            "relative file link should render its URL inline: {text}"
+        );
     }
 
     #[test]
