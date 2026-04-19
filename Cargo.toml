@@ -10,6 +10,7 @@ repository = "https://github.com/jaschadub/glum"
 readme = "README.md"
 keywords = ["markdown", "tui", "reader", "cli"]
 categories = ["command-line-utilities", "text-processing"]
+build = "build.rs"
 
 [lib]
 name = "glum_lib"
@@ -32,6 +33,9 @@ dirs = "5"
 sha2 = "0.10"
 anyhow = "1"
 notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 lto = "thin"

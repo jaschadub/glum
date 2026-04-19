@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/jaschadub/glum/main/glum-logo.png" alt="glum" width="480">
+</p>
+
 # glum
 
 A reading-focused terminal markdown viewer — more like "Reader Mode in your
