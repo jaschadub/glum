@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
+use clap_complete::Shell;
 
 use crate::layout::LayoutName;
 use crate::theme::ThemeName;
@@ -16,8 +17,11 @@ use crate::theme::ThemeName;
 #[derive(Debug, Parser)]
 #[command(name = "glum", version, about, long_about = None)]
 pub struct Cli {
-    /// Path to a markdown file. Pass `-` to read from stdin.
-    pub path: PathBuf,
+    /// Path to a markdown file. Pass `-` to read from stdin. Not required
+    /// when `--generate-completions` or `--generate-man` is used, because
+    /// those print to stdout and exit.
+    #[arg(required_unless_present_any(["generate_completions", "generate_man"]))]
+    pub path: Option<PathBuf>,
 
     /// Target column width for the reading measure.
     #[arg(long, default_value_t = 72, value_parser = parse_measure)]
@@ -81,6 +85,19 @@ pub struct Cli {
     /// scrolling with the wheel over using `j`/`k`/space.
     #[arg(long)]
     pub mouse: bool,
+
+    /// Emit a shell completion script for the given shell on stdout, then
+    /// exit. Redirect into the shell's completion directory — examples:
+    /// `glum --generate-completions bash > ~/.local/share/bash-completion/completions/glum`,
+    /// `glum --generate-completions zsh > "${fpath[1]}/_glum"`,
+    /// `glum --generate-completions fish > ~/.config/fish/completions/glum.fish`.
+    #[arg(long = "generate-completions", value_name = "SHELL")]
+    pub generate_completions: Option<Shell>,
+
+    /// Emit a roff-formatted man page on stdout, then exit.
+    /// Typical use: `glum --generate-man > /usr/local/share/man/man1/glum.1`.
+    #[arg(long = "generate-man")]
+    pub generate_man: bool,
 }
 
 /// CLI wrapper for [`crate::app::Align`] so it can be used as a

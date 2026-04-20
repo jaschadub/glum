@@ -17,8 +17,51 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Shell completions and the man page are pure text output from clap —
+  # identical regardless of target triple — so we generate them once on a
+  # native Linux runner and fan them out to every platform tarball. This
+  # avoids having to execute a cross-compiled aarch64 binary to produce
+  # them on the x86_64 builder.
+  assets:
+    name: Generate completions + man page
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-latest-assets-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build glum (native)
+        run: cargo build --release
+
+      - name: Generate shell completions and man page
+        shell: bash
+        run: |
+          mkdir -p extras
+          ./target/release/glum --generate-completions bash > extras/glum.bash
+          ./target/release/glum --generate-completions zsh  > extras/_glum
+          ./target/release/glum --generate-completions fish > extras/glum.fish
+          ./target/release/glum --generate-man              > extras/glum.1
+
+      - name: Upload extras
+        uses: actions/upload-artifact@v4
+        with:
+          name: extras
+          path: extras
+
   build:
     name: Build ${{ matrix.target }}
+    needs: assets
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -84,6 +127,12 @@ jobs:
             echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Download extras (completions + man page)
+        uses: actions/download-artifact@v4
+        with:
+          name: extras
+          path: extras
+
       - name: Package (Unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -93,6 +142,17 @@ jobs:
           mkdir -p staging
           cp target/${{ matrix.target }}/release/glum staging/
           cp LICENSE NOTICE README.md CHANGELOG.md staging/
+          # Completion scripts and man page, laid out in the conventional
+          # paths so a package manager can rsync `staging/` straight into
+          # `/usr/local/` (or a prefix dir) without renames.
+          mkdir -p staging/share/bash-completion/completions \
+                   staging/share/zsh/site-functions \
+                   staging/share/fish/vendor_completions.d \
+                   staging/share/man/man1
+          cp extras/glum.bash staging/share/bash-completion/completions/glum
+          cp extras/_glum     staging/share/zsh/site-functions/_glum
+          cp extras/glum.fish staging/share/fish/vendor_completions.d/glum.fish
+          cp extras/glum.1    staging/share/man/man1/glum.1
           cd staging
           tar czf "../${ARCHIVE}" *
           cd ..
@@ -107,6 +167,12 @@ jobs:
           mkdir -p staging
           cp target/${{ matrix.target }}/release/glum.exe staging/
           cp LICENSE NOTICE README.md CHANGELOG.md staging/
+          # On Windows we just ship a completions/ folder next to the exe —
+          # PowerShell and cmd don't have the XDG-style conventions of Unix.
+          mkdir -p staging/completions
+          cp extras/glum.bash staging/completions/glum.bash
+          cp extras/_glum     staging/completions/_glum
+          cp extras/glum.fish staging/completions/glum.fish
           cd staging
           7z a "../${ARCHIVE}" *
           cd ..

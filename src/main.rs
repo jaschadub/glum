@@ -2,12 +2,13 @@
 #![deny(rust_2018_idioms)]
 
 use std::fs;
-use std::io::{self, IsTerminal, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::generate as generate_completions;
 
 use glum_lib::app::{self, Align, InitialState};
 use glum_lib::cli::Cli;
@@ -32,7 +33,29 @@ fn main() -> ExitCode {
 fn real_main() -> Result<()> {
     let cli = Cli::parse();
 
-    let (path, source) = load_input(&cli.path)?;
+    // Generator shortcuts: emit completions or a man page to stdout and
+    // exit before doing anything terminal-related. Order matters — these
+    // can't require a PATH (`required_unless_present_any` handles that).
+    if let Some(shell) = cli.generate_completions {
+        let mut cmd = Cli::command();
+        let bin = cmd.get_name().to_string();
+        generate_completions(shell, &mut cmd, bin, &mut io::stdout());
+        return Ok(());
+    }
+    if cli.generate_man {
+        let cmd = Cli::command();
+        let man = clap_mangen::Man::new(cmd);
+        let mut out = Vec::new();
+        man.render(&mut out).context("rendering man page")?;
+        io::stdout()
+            .write_all(&out)
+            .context("writing man page to stdout")?;
+        return Ok(());
+    }
+
+    // clap guaranteed `path` is Some via `required_unless_present_any`.
+    let path = cli.path.as_deref().expect("path is required");
+    let (path, source) = load_input(path)?;
 
     if !io::stdout().is_terminal() {
         anyhow::bail!("stdout is not a terminal; glum requires a TTY to render");

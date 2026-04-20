@@ -106,6 +106,30 @@ glum [OPTIONS] <PATH>
       --no-remember         don't persist reading position / preferences across runs
       --mouse               enable mouse-wheel scrolling (disables native text selection)
   -f, --follow              re-render when the file changes on disk
+  --generate-completions <SHELL>  emit a shell completion script to stdout (bash/zsh/fish/elvish/powershell)
+  --generate-man                  emit a roff man page to stdout
+```
+
+### Shell completions and man page
+
+Every release tarball ships completions and a man page alongside the
+binary:
+
+```
+share/bash-completion/completions/glum
+share/zsh/site-functions/_glum
+share/fish/vendor_completions.d/glum.fish
+share/man/man1/glum.1
+```
+
+A packager can rsync `share/` straight under a prefix (`/usr/local/` or
+similar). Installing by hand from a `cargo install` build:
+
+```bash
+glum --generate-completions bash > ~/.local/share/bash-completion/completions/glum
+glum --generate-completions zsh  > "${fpath[1]}/_glum"
+glum --generate-completions fish > ~/.config/fish/completions/glum.fish
+glum --generate-man              > ~/.local/share/man/man1/glum.1
 ```
 
 If `--theme`, `--layout`, or `--align` is omitted, the last value you used is

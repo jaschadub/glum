@@ -4,6 +4,20 @@ All notable changes to glum are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `--generate-completions <shell>` emits a shell-completion script for
+  `bash`, `zsh`, `fish`, `elvish`, or `powershell` to stdout. Built from
+  the actual CLI definition, so completions stay in sync automatically.
+- `--generate-man` emits a roff man page to stdout.
+- Release tarballs now include completions and the man page laid out in
+  the conventional XDG directories (`share/bash-completion/completions/`,
+  `share/zsh/site-functions/`, `share/fish/vendor_completions.d/`,
+  `share/man/man1/`), so distro packagers can drop `share/` under a
+  prefix without renames.
+
 ## [0.2.1] — 2026-04-19
 
 ### Changed
