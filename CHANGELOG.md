@@ -4,7 +4,7 @@ All notable changes to glum are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.2] — 2026-04-20
 
 ### Added
 
@@ -22,6 +22,8 @@ All notable changes to glum are documented in this file. Format based on
   `cargo-generate-rpm`). Packages install the binary to `/usr/bin/glum`
   and land completions + man page in the right XDG paths. Each `.deb` /
   `.rpm` is cosign-signed alongside the existing archives.
+
+[0.2.2]: https://github.com/jaschadub/glum/releases/tag/v0.2.2
 
 ## [0.2.1] — 2026-04-19
 

@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/jaschadub/glum/main/scripts/install
 
 This downloads the latest signed release archive for your platform, verifies
 its SHA-256, and installs `glum` into `$HOME/.local/bin`. Override the prefix
-with `GLUM_PREFIX=/usr/local`, pin a version with `GLUM_VERSION=v0.2.1`.
+with `GLUM_PREFIX=/usr/local`, pin a version with `GLUM_VERSION=v0.2.2`.
 
 ### Any platform — via cargo
 
@@ -38,11 +38,11 @@ directly:
 
 ```bash
 # Debian / Ubuntu (pick the arch for your machine)
-curl -LO https://github.com/jaschadub/glum/releases/latest/download/glum_0.2.1-1_amd64.deb
-sudo apt install ./glum_0.2.1-1_amd64.deb
+curl -LO https://github.com/jaschadub/glum/releases/latest/download/glum_0.2.2-1_amd64.deb
+sudo apt install ./glum_0.2.2-1_amd64.deb
 
 # Fedora / RHEL / openSUSE
-sudo dnf install https://github.com/jaschadub/glum/releases/latest/download/glum-0.2.1-1.x86_64.rpm
+sudo dnf install https://github.com/jaschadub/glum/releases/latest/download/glum-0.2.2-1.x86_64.rpm
 ```
 
 Both packages install the binary to `/usr/bin/glum`, the man page to
