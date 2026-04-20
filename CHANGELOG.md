@@ -17,6 +17,11 @@ All notable changes to glum are documented in this file. Format based on
   `share/zsh/site-functions/`, `share/fish/vendor_completions.d/`,
   `share/man/man1/`), so distro packagers can drop `share/` under a
   prefix without renames.
+- **Signed `.deb` and `.rpm` packages** for `x86_64` and `aarch64` Linux
+  attached to every GitHub Release (via `cargo-deb` and
+  `cargo-generate-rpm`). Packages install the binary to `/usr/bin/glum`
+  and land completions + man page in the right XDG paths. Each `.deb` /
+  `.rpm` is cosign-signed alongside the existing archives.
 
 ## [0.2.1] — 2026-04-19
 

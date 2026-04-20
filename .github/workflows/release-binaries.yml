@@ -178,11 +178,49 @@ jobs:
           cd ..
           echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
 
-      - name: Upload artifact
+      - name: Upload archive artifact
         uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}
           path: ${{ env.ARCHIVE }}
+
+      # Linux-only: build .deb and .rpm from the freshly-built binary.
+      # Uses --no-build so it reuses the cargo output instead of recompiling.
+      # `depends = "libc6"` in Cargo.toml is pinned to avoid dpkg-shlibdeps
+      # failures when the binary is cross-compiled for aarch64.
+      - name: Install cargo-deb + cargo-generate-rpm (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo install cargo-deb --locked
+          cargo install cargo-generate-rpm --locked
+
+      - name: Build .deb (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cargo deb --no-build --no-strip --target ${{ matrix.target }}
+          ls -la target/${{ matrix.target }}/debian/
+
+      - name: Build .rpm (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cargo generate-rpm --target ${{ matrix.target }}
+          ls -la target/${{ matrix.target }}/generate-rpm/
+
+      - name: Upload .deb artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.target }}
+          path: target/${{ matrix.target }}/debian/*.deb
+
+      - name: Upload .rpm artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.target }}
+          path: target/${{ matrix.target }}/generate-rpm/*.rpm
 
   checksums:
     name: Sign and publish release assets
@@ -193,7 +231,8 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: binary-*
+          # Pulls in `binary-*` (archives), `deb-*`, and `rpm-*`.
+          pattern: '{binary,deb,rpm}-*'
           merge-multiple: true
 
       - name: Install cosign
@@ -210,7 +249,7 @@ jobs:
       - name: Sign artifacts with cosign (keyless, Sigstore)
         run: |
           cd artifacts
-          for file in *.tar.gz *.zip; do
+          for file in *.tar.gz *.zip *.deb *.rpm; do
             [ -f "$file" ] || continue
             echo "Signing $file..."
             cosign sign-blob --yes "$file" \

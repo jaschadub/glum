@@ -30,9 +30,28 @@ with `GLUM_PREFIX=/usr/local`, pin a version with `GLUM_VERSION=v0.2.1`.
 cargo install glum
 ```
 
-### Homebrew, apt, winget, etc.
+### Debian / Ubuntu (.deb) and Fedora / RHEL (.rpm)
 
-Not yet. Until then use cargo or the one-liner above. On Windows, grab the
+Every [release](https://github.com/jaschadub/glum/releases) attaches
+signed `.deb` and `.rpm` packages for `x86_64` and `aarch64`. Install
+directly:
+
+```bash
+# Debian / Ubuntu (pick the arch for your machine)
+curl -LO https://github.com/jaschadub/glum/releases/latest/download/glum_0.2.1-1_amd64.deb
+sudo apt install ./glum_0.2.1-1_amd64.deb
+
+# Fedora / RHEL / openSUSE
+sudo dnf install https://github.com/jaschadub/glum/releases/latest/download/glum-0.2.1-1.x86_64.rpm
+```
+
+Both packages install the binary to `/usr/bin/glum`, the man page to
+`/usr/share/man/man1/`, and completions under the usual shell-specific
+XDG directories — no further setup needed.
+
+### Homebrew, winget, etc.
+
+Not yet. Use cargo or the install.sh one-liner. On Windows, grab the
 `.zip` from the [releases page](https://github.com/jaschadub/glum/releases)
 or use `cargo install glum`.
 

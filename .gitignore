@@ -1,2 +1,5 @@
 /target
 Cargo.lock.bak
+# Generated at release time by `glum --generate-completions` /
+# `glum --generate-man`; real source lives in clap's definitions.
+/extras/
