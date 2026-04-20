@@ -4,6 +4,44 @@ All notable changes to glum are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-04-19
+
+### Added
+
+- `Y` — per-line copy mode inside a code block. Moves a line cursor with
+  `j`/`k`/`↑`/`↓`, highlights the selected source line (including any
+  soft-wrapped continuations), and copies just that line on `y`/`Enter`.
+  `Y` again copies the whole block; `R` jumps into the raw view; `Esc`
+  exits.
+- `R` — full-screen raw code overlay. Renders the current block with no
+  wrap and horizontal pan (`h`/`l`/`←`/`→`, `0`/`$`). Per-line cursor
+  with `y`/`Enter` copy; `Y` copies the whole block. `#` toggles a
+  source-line-number gutter (on by default).
+- Both new modes copy from the original unwrapped source, so copied text
+  never contains the `↪` continuation marker or a truncation `…`.
+- `e` — suspend the TUI and open `$VISUAL` / `$EDITOR` (default `vi`)
+  at the source line of the nearest heading. Handles `$EDITOR` values
+  with args (e.g. `"nvim --clean"`), sends `+<line>` only to editors
+  that accept it (vi / vim / nvim / nano / emacs / kak / helix /
+  micro / …), and reloads the file on exit.
+- `r` — manually reload the current file (works with or without
+  `--follow`).
+- Native clipboard fallback. Local copy operations now prefer `pbcopy`
+  (macOS), `wl-copy` (Wayland), `xclip`, or `xsel` when available; OSC
+  52 remains the fallback and the only transport used in SSH sessions.
+- `--mouse` — opt-in mouse-wheel scrolling. Left off by default so the
+  terminal's native click-and-drag text selection keeps working.
+- Status-bar flash: successful copies and edits briefly reverse the
+  accent color so the confirmation is hard to miss.
+
+### Changed
+
+- README Features section simplified — the long per-feature prose was
+  collapsed into a compact list so the project's shape is easier to
+  scan.
+
+[0.2.0]: https://github.com/jaschadub/glum/releases/tag/v0.2.0
+
 ## [0.1.1] — 2026-04-18
 
 First release with pre-built binaries and a curl-install one-liner.

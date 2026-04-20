@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/jaschadub/glum/main/scripts/install
 
 This downloads the latest signed release archive for your platform, verifies
 its SHA-256, and installs `glum` into `$HOME/.local/bin`. Override the prefix
-with `GLUM_PREFIX=/usr/local`, pin a version with `GLUM_VERSION=v0.1.0`.
+with `GLUM_PREFIX=/usr/local`, pin a version with `GLUM_VERSION=v0.2.0`.
 
 ### Any platform — via cargo
 
@@ -60,46 +60,34 @@ cosign verify-blob \
 
 ## Features
 
-- **Narrow, centered measure** (configurable, default 72 cols) so long lines
-  don't kill reading. Toggle to left or right anchoring with `A`.
-- **Five color themes** — `light`, `dark`, `sepia`, `night`, `plain` — cycled
-  with `T` at runtime. Your choice is remembered across runs.
-- **Two typographic layouts** — `minimal` (subdued) and `vivid` (strong
-  hierarchy with heading prefixes `❯ § ▸ ›` and full-width rules), toggle
-  with `L`.
-- **Syntax highlighting** for fenced code in 12 languages: Rust, Python,
-  JavaScript / TypeScript, Go, Bash, JSON, YAML, TOML, HTML / XML, C / C++,
-  Java. Unknown fences pass through cleanly.
-- **Code blocks** render as top/bottom-ruled sections with a language label
-  and a copy affordance. No side borders, so mouse selection yields clean
-  code. Long code lines soft-wrap by default (with a `↪` continuation
-  marker); press `W` to flip to truncate-with-`…`.
-- **Clipboard copy via OSC 52** — `y` copies the in-view code block to the
-  system clipboard. Works over SSH on terminals that support OSC 52; glum
-  auto-hides the affordance and disables the key in SSH sessions where it
-  often gets stripped by tmux / forwarding.
-- **Table rendering** wraps long cells across multiple visual rows, keeps
-  column separators aligned on every row, and draws light `╌` separators
-  between rows when any row wraps.
-- **Inline link URLs** — `[text](https://...)` shows `text (https://...)`
-  in dim; autolinks aren't duplicated; anchor / relative links show just
-  the text.
-- **Smart typography** — straight quotes become curly, `--` becomes em-dash
-  `—`, `...` becomes `…`.
-- **In-file search** (`/`) with live match count in the overlay, persistent
-  `match N/total` counter in the footer, Tab / ↓ next, Shift-Tab / ↑ prev,
-  `c` to clear.
-- **Table of contents** (`t`) — navigable overlay built from the headings.
-- **Position memory** per file, plus remembered theme / layout / align /
-  wrap preferences. State lives in `$XDG_STATE_HOME/glum/positions.json`.
-- **Follow mode** (`-f` / `--follow`) re-renders when the file changes on
-  disk — great paired with an editor in another pane. Scroll position is
-  preserved across reloads.
-- **Terminal-safe panic handler** — a crash restores raw-mode, alternate
-  screen, and cursor so you don't end up with a broken shell.
-- **Bounded inputs**: 64 MiB file-size cap; 256-char search query cap;
-  atomic writes on the state file with 0600 perms; SHA-256 path hashing so
-  the state file doesn't reveal which files you've read.
+- **Reader layout** — narrow, centered measure (default 72 cols), five
+  themes (`T`), two typographic layouts (`L`), three alignments (`A`).
+  All toggle at runtime and are remembered across runs.
+- **Code blocks** — syntax highlighting for 12 languages, top/bottom
+  rules with a language label, no side borders. Long lines soft-wrap
+  with `↪` or truncate with `…` (`W`).
+- **Copy** — `y` the block, `Y` pick a single source line, `R` open a
+  full-screen raw view with horizontal pan. Copies always come from the
+  original source, so no `↪` or `…` leaks. Uses native clipboard
+  (`pbcopy` / `wl-copy` / `xclip` / `xsel`) when available, OSC 52
+  otherwise.
+- **Tables** wrap long cells instead of truncating, keep column
+  separators aligned, and draw `╌` row separators when any row wraps.
+- **Links** render inline URLs for external and relative paths; anchor
+  links stay clean.
+- **Search** (`/`) with live match count and `n` / `N` / Tab stepping.
+- **TOC** (`t`) overlay; jump to first match of a heading title with
+  `-H`.
+- **Editor handoff** — `e` opens `$EDITOR` / `$VISUAL` at the nearest
+  heading's source line, then reloads.
+- **Follow mode** (`-f`) re-renders on file change; `r` reloads manually.
+- **Per-file position memory**, hashed paths, atomic writes. Opt out
+  with `--no-remember`.
+- **Optional mouse scroll** (`--mouse`) — off by default so the
+  terminal's native text selection keeps working.
+- **Smart typography** (`"..."` → `“…”`, `--` → `—`, `...` → `…`).
+- **Terminal-safe panic handler** — a crash still restores your shell.
+- **Bounded inputs** — 64 MiB file cap; 256-char search cap.
 
 ## Usage
 
@@ -116,6 +104,7 @@ glum [OPTIONS] <PATH>
       --reset-position      ignore saved position; start at the top
       --truncate-code       truncate long code lines with `…` instead of soft-wrapping
       --no-remember         don't persist reading position / preferences across runs
+      --mouse               enable mouse-wheel scrolling (disables native text selection)
   -f, --follow              re-render when the file changes on disk
 ```
 
@@ -152,6 +141,10 @@ cat post.md | glum -                        # read from stdin
 | n / N / Tab / → / ←   | next / previous search match                  |
 | c                     | clear active search                           |
 | y                     | copy the in-view code block to clipboard      |
+| Y                     | pick a single code line to copy (j/k, Enter)  |
+| R                     | raw code view — no wrap, h/l pans, y copies   |
+| r                     | reload the current file from disk             |
+| e                     | open in `$EDITOR` at the nearest heading      |
 | T                     | cycle theme                                   |
 | L                     | cycle layout (minimal ↔ vivid)                |
 | A                     | toggle align (center → left → right)          |

@@ -13,6 +13,7 @@
 //! crash, no security surprise.
 
 use std::io::{self, Write};
+use std::process::{Command, Stdio};
 
 /// Maximum bytes we'll attempt to copy. Some terminals truncate OSC 52 at
 /// 8KB–100KB; we refuse to send pathologically large blocks rather than
@@ -38,12 +39,73 @@ pub fn copy_to_clipboard<W: Write>(out: &mut W, content: &str) -> io::Result<Opt
     Ok(Some(bytes.len()))
 }
 
-/// Convenience wrapper: copy to stdout. Uses a write-then-flush lock so the
-/// escape sequence can't interleave with other terminal output.
+/// Convenience wrapper: copy to the system clipboard, using whichever
+/// transport is most likely to succeed. When running locally and a native
+/// clipboard tool is available (`pbcopy`, `wl-copy`, `xclip`, `xsel`), use
+/// it directly — native tools set the real OS clipboard deterministically.
+/// Otherwise (remote session, or no native tool found) fall back to OSC 52,
+/// which the terminal may or may not honor. Uses a write-then-flush lock so
+/// the escape sequence can't interleave with other terminal output.
 pub fn copy(content: &str) -> io::Result<Option<usize>> {
+    if !is_ssh_session() {
+        if let Some(n) = try_native_copy(content) {
+            return Ok(Some(n));
+        }
+    }
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     copy_to_clipboard(&mut handle, content)
+}
+
+/// Try each locally available clipboard command in turn; return the first
+/// byte-count that succeeds, or `None` if nothing in the environment looks
+/// like a GUI clipboard or none of the candidate binaries are installed.
+fn try_native_copy(content: &str) -> Option<usize> {
+    if content.len() > MAX_COPY_BYTES {
+        return None;
+    }
+    for (cmd, args) in native_copy_candidates() {
+        if let Ok(true) = run_pipe(cmd, args, content) {
+            return Some(content.len());
+        }
+    }
+    None
+}
+
+/// Ordered list of `(command, args)` pairs to try for native clipboard copy.
+/// Order reflects platform likelihood: macOS ships `pbcopy`, Wayland sessions
+/// expose `wl-copy`, X11 sessions expose `xclip`/`xsel`. Tools whose binary
+/// isn't present fail-fast on `spawn`.
+fn native_copy_candidates() -> Vec<(&'static str, &'static [&'static str])> {
+    let mut out: Vec<(&'static str, &'static [&'static str])> = Vec::new();
+    if cfg!(target_os = "macos") {
+        out.push(("pbcopy", &[]));
+    }
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        out.push(("wl-copy", &[]));
+    }
+    if std::env::var_os("DISPLAY").is_some() {
+        out.push(("xclip", &["-selection", "clipboard"]));
+        out.push(("xsel", &["--clipboard", "--input"]));
+    }
+    if cfg!(target_os = "windows") {
+        // `clip.exe` reads stdin on Windows; effectively the native path.
+        out.push(("clip", &[]));
+    }
+    out
+}
+
+fn run_pipe(cmd: &str, args: &[&str], content: &str) -> io::Result<bool> {
+    let mut child = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(content.as_bytes())?;
+    }
+    Ok(child.wait()?.success())
 }
 
 /// Detect whether we're running inside an SSH session. OSC 52 *can* work over

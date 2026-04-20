@@ -108,6 +108,7 @@ fn real_main() -> Result<()> {
             open_toc: cli.toc,
         },
         watcher,
+        mouse: cli.mouse,
     };
 
     app::run(cfg)

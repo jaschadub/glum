@@ -67,6 +67,13 @@ pub struct Cli {
     /// to toggle.
     #[arg(long = "truncate-code")]
     pub truncate_code: bool,
+
+    /// Enable mouse wheel scrolling. Off by default because mouse capture
+    /// disables the terminal's native click-and-drag text selection — which
+    /// most readers still want for copying. Turn it on when you prefer
+    /// scrolling with the wheel over using `j`/`k`/space.
+    #[arg(long)]
+    pub mouse: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

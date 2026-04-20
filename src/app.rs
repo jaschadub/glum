@@ -2,10 +2,14 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseEvent, MouseEventKind,
+};
 use crossterm::{cursor, execute, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -15,6 +19,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Terminal;
 
 use crate::clipboard;
+use crate::highlight::highlight_line;
 use crate::layout::LayoutName;
 use crate::positions::PositionStore;
 use crate::render::{self, CodeBlockEntry, Rendered, TocEntry};
@@ -36,6 +41,10 @@ pub struct AppConfig {
     pub initial: InitialState,
     /// Enabled when `--follow` is active and the input is a real file.
     pub watcher: Option<FileWatcher>,
+    /// When true, enable mouse capture so the wheel scrolls the reader.
+    /// Comes at the cost of losing the terminal's native drag-select, so
+    /// it's opt-in via `--mouse`.
+    pub mouse: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,9 +104,32 @@ pub struct InitialState {
 
 enum Mode {
     Reading,
-    Toc { selected: usize },
-    Search { input: String },
+    Toc {
+        selected: usize,
+    },
+    Search {
+        input: String,
+    },
     Help,
+    /// Inline line-pick: the selected source line of a specific code block is
+    /// highlighted in the main view; j/k move, y/Enter copies that line.
+    LinePick {
+        block_idx: usize,
+        line_idx: usize,
+    },
+    /// Full-screen raw view of a code block: no wrap, horizontal pan, per-line
+    /// cursor — lets the reader see full long lines and copy a single one.
+    RawCode {
+        block_idx: usize,
+        line_idx: usize,
+        h_off: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusKind {
+    Info,
+    Success,
 }
 
 struct App {
@@ -113,10 +145,16 @@ struct App {
     mode: Mode,
     search_matches: Vec<usize>,
     search_cursor: usize,
-    status: Option<(String, std::time::Instant)>,
+    status: Option<(String, std::time::Instant, StatusKind)>,
     /// Time of the last detected filesystem change; used to settle bursty
     /// editor writes before triggering a reload.
     pending_reload_at: Option<std::time::Instant>,
+    /// Set by the `e` keybind; consumed by the main loop, which owns the
+    /// ratatui `Terminal` handle needed to suspend/restore the TUI.
+    pending_editor: bool,
+    /// When `true`, the raw-code overlay prepends each row with a dim source
+    /// line-number gutter. Toggled inside the overlay with `#`.
+    raw_show_line_nums: bool,
 }
 
 impl App {
@@ -156,6 +194,8 @@ impl App {
             search_cursor: 0,
             status: None,
             pending_reload_at: None,
+            pending_editor: false,
+            raw_show_line_nums: true,
         };
         app.apply_initial();
         app
@@ -186,6 +226,20 @@ impl App {
                 self.set_status(format!("reload failed: {e}"));
             }
         }
+    }
+
+    /// Source-file line of the heading nearest above the current viewport.
+    /// Used by the external-editor handoff so the editor lands roughly where
+    /// the reader was. Falls back to line 1 when there are no headings.
+    fn nearest_heading_source_line(&self) -> usize {
+        if self.rendered.toc.is_empty() {
+            return 1;
+        }
+        let idx = current_toc_index(&self.rendered.toc, self.offset);
+        self.rendered
+            .toc
+            .get(idx)
+            .map_or(1, |e| e.source_line.max(1))
     }
 
     /// Apply CLI-provided opening state: jump to heading, run search, open TOC.
@@ -219,7 +273,13 @@ impl App {
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
-        self.status = Some((msg.into(), std::time::Instant::now()));
+        self.status = Some((msg.into(), std::time::Instant::now(), StatusKind::Info));
+    }
+
+    /// Same as `set_status` but marks the message as a success so the footer
+    /// briefly flashes it (reversed accent) before fading to the normal tone.
+    fn set_status_success(&mut self, msg: impl Into<String>) {
+        self.status = Some((msg.into(), std::time::Instant::now(), StatusKind::Success));
     }
 
     fn jump_to(&mut self, line: usize) {
@@ -334,6 +394,101 @@ impl App {
         self.search_cursor = 0;
     }
 
+    /// Index of the code block to act on for the current viewport — same
+    /// selection logic as `pick_code_block` but returns the `Vec` index so
+    /// mode state can hold a stable reference.
+    fn current_code_block_idx(&self) -> Option<usize> {
+        let view_top = self.offset;
+        let view_bottom = self
+            .offset
+            .saturating_add(self.last_viewport_h.saturating_sub(1) as usize);
+        pick_code_block_idx(&self.rendered.code_blocks, view_top, view_bottom)
+    }
+
+    /// Default source-line index when entering a line-picker: the first line
+    /// whose visual span starts at or below the viewport top — so the cursor
+    /// lands on something the reader can already see. Falls back to 0.
+    fn initial_line_idx(&self, block_idx: usize) -> usize {
+        let block = &self.rendered.code_blocks[block_idx];
+        if block.line_visuals.is_empty() {
+            return 0;
+        }
+        block
+            .line_visuals
+            .iter()
+            .position(|(vs, _)| *vs >= self.offset)
+            .unwrap_or(0)
+            .min(block.line_visuals.len() - 1)
+    }
+
+    fn enter_line_pick(&mut self) {
+        let Some(block_idx) = self.current_code_block_idx() else {
+            self.set_status("no code blocks");
+            return;
+        };
+        let line_idx = self.initial_line_idx(block_idx);
+        self.mode = Mode::LinePick {
+            block_idx,
+            line_idx,
+        };
+        self.ensure_code_line_visible(block_idx, line_idx);
+    }
+
+    fn enter_raw_code(&mut self) {
+        let Some(block_idx) = self.current_code_block_idx() else {
+            self.set_status("no code blocks");
+            return;
+        };
+        let line_idx = self.initial_line_idx(block_idx);
+        self.mode = Mode::RawCode {
+            block_idx,
+            line_idx,
+            h_off: 0,
+        };
+    }
+
+    /// Scroll the reader so the visual rows of `(block_idx, line_idx)` are
+    /// inside the viewport. Used by `LinePick` when the user moves the cursor.
+    fn ensure_code_line_visible(&mut self, block_idx: usize, line_idx: usize) {
+        let block = &self.rendered.code_blocks[block_idx];
+        let Some(&(vs, ve)) = block.line_visuals.get(line_idx) else {
+            return;
+        };
+        let body_h = self.last_viewport_h.saturating_sub(2) as usize;
+        if body_h == 0 {
+            return;
+        }
+        if ve >= self.offset + body_h {
+            self.offset = ve + 1 - body_h;
+        }
+        if vs < self.offset {
+            self.offset = vs;
+        }
+        let max = self.total_lines().saturating_sub(1);
+        self.offset = self.offset.min(max);
+    }
+
+    /// Copy a single source line of a code block to the clipboard.
+    fn copy_source_line(&mut self, block_idx: usize, line_idx: usize) {
+        if clipboard::is_ssh_session() {
+            self.set_status("copy unavailable in SSH session");
+            return;
+        }
+        let block = &self.rendered.code_blocks[block_idx];
+        let Some(line) = block.code.split('\n').nth(line_idx) else {
+            self.set_status("no such line");
+            return;
+        };
+        let payload = line.to_string();
+        let total = block.line_visuals.len().max(1);
+        let pos = line_idx + 1;
+        match clipboard::copy(&payload) {
+            Ok(Some(n)) => self.set_status_success(format!("copied line {pos}/{total} — {n}B")),
+            Ok(None) => self.set_status("line too large to copy"),
+            Err(_) => self.set_status("copy failed"),
+        }
+    }
+
     /// Copy the code block currently in view (or nearest above if none are
     /// on-screen) to the system clipboard via OSC 52.
     fn copy_current_code_block(&mut self) {
@@ -344,21 +499,21 @@ impl App {
             self.set_status("copy unavailable in SSH session");
             return;
         }
-        if self.rendered.code_blocks.is_empty() {
-            self.set_status("no code blocks");
-            return;
-        }
-        let viewport_end = self
-            .offset
-            .saturating_add(self.last_viewport_h.saturating_sub(1) as usize);
-        let block = pick_code_block(&self.rendered.code_blocks, self.offset, viewport_end);
-        let Some(block) = block else {
+        let Some(block_idx) = self.current_code_block_idx() else {
             self.set_status("no code blocks");
             return;
         };
+        self.copy_whole_block(block_idx);
+    }
 
+    fn copy_whole_block(&mut self, block_idx: usize) {
+        if clipboard::is_ssh_session() {
+            self.set_status("copy unavailable in SSH session");
+            return;
+        }
+        let block = &self.rendered.code_blocks[block_idx];
         match clipboard::copy(&block.code) {
-            Ok(Some(n)) => self.set_status(format!("copied {n} bytes ({})", block.lang)),
+            Ok(Some(n)) => self.set_status_success(format!("copied {n} bytes ({})", block.lang)),
             Ok(None) => self.set_status("block too large to copy"),
             Err(_) => self.set_status("copy failed"),
         }
@@ -389,7 +544,8 @@ pub fn run(cfg: AppConfig) -> Result<()> {
         prev_hook(info);
     }));
 
-    let mut guard = TerminalGuard::new()?;
+    let mouse = cfg.mouse;
+    let mut guard = TerminalGuard::new(mouse)?;
     let result = run_loop(&mut guard.terminal, cfg);
     // TerminalGuard::drop will restore the terminal whether we succeeded or errored.
     drop(guard);
@@ -400,10 +556,11 @@ pub fn run(cfg: AppConfig) -> Result<()> {
 
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    mouse: bool,
 }
 
 impl TerminalGuard {
-    fn new() -> Result<Self> {
+    fn new(mouse: bool) -> Result<Self> {
         terminal::enable_raw_mode().context("enabling raw mode")?;
         let mut stdout = io::stdout();
         if let Err(e) = execute!(
@@ -415,15 +572,23 @@ impl TerminalGuard {
             terminal::disable_raw_mode().ok();
             return Err(anyhow::Error::from(e).context("entering alternate screen"));
         }
+        if mouse {
+            // Best-effort: if the terminal rejects mouse capture we still
+            // want to run, just without wheel scrolling.
+            execute!(stdout, EnableMouseCapture).ok();
+        }
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend).context("building terminal")?;
-        Ok(Self { terminal })
+        Ok(Self { terminal, mouse })
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         terminal::disable_raw_mode().ok();
+        if self.mouse {
+            execute!(self.terminal.backend_mut(), DisableMouseCapture).ok();
+        }
         execute!(
             self.terminal.backend_mut(),
             event::DisableBracketedPaste,
@@ -433,6 +598,106 @@ impl Drop for TerminalGuard {
         .ok();
         self.terminal.show_cursor().ok();
     }
+}
+
+/// Suspend the TUI, run `$VISUAL` / `$EDITOR` (default `vi`) on the current
+/// file, then resume. Called from the main loop so we can invalidate
+/// ratatui's diff buffer (`terminal.clear()`) after re-entering the alternate
+/// screen — without that, the reader comes back blank until the user types a
+/// key that forces a state change.
+fn run_external_editor(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> Result<()> {
+    if app.cfg.path.as_os_str() == "<stdin>" {
+        app.set_status("cannot edit stdin");
+        return Ok(());
+    }
+    let editor_raw = std::env::var("VISUAL")
+        .ok()
+        .or_else(|| std::env::var("EDITOR").ok())
+        .unwrap_or_else(|| "vi".to_string());
+    // Handle `$EDITOR="nvim --clean"` etc. by splitting on whitespace; the
+    // first token is the command, the rest are prefix args.
+    let mut parts = editor_raw.split_whitespace();
+    let cmd_name = parts.next().unwrap_or("vi").to_string();
+    let prefix_args: Vec<String> = parts.map(str::to_string).collect();
+    let line = app.nearest_heading_source_line();
+
+    // --- Suspend ---
+    terminal::disable_raw_mode().ok();
+    if app.cfg.mouse {
+        execute!(terminal.backend_mut(), DisableMouseCapture).ok();
+    }
+    execute!(
+        terminal.backend_mut(),
+        event::DisableBracketedPaste,
+        terminal::LeaveAlternateScreen,
+        cursor::Show,
+    )?;
+
+    let mut cmd = Command::new(&cmd_name);
+    cmd.args(&prefix_args);
+    if uses_plus_line_arg(&cmd_name) {
+        cmd.arg(format!("+{line}"));
+    }
+    cmd.arg(&app.cfg.path);
+    let status = cmd.status();
+
+    // --- Resume ---
+    terminal::enable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        terminal::EnterAlternateScreen,
+        cursor::Hide,
+        event::EnableBracketedPaste,
+    )?;
+    if app.cfg.mouse {
+        execute!(terminal.backend_mut(), EnableMouseCapture).ok();
+    }
+    // Reset ratatui's last-known frame so the very next draw is a full
+    // repaint — we changed terminal state behind its back.
+    terminal.clear()?;
+
+    match status {
+        Ok(s) if s.success() => {
+            app.reload_from_disk();
+            app.set_status_success(format!("edited in {cmd_name}"));
+        }
+        Ok(_) => app.set_status(format!("{cmd_name}: exited with error")),
+        Err(e) => app.set_status(format!("{cmd_name} failed: {e}")),
+    }
+    Ok(())
+}
+
+/// Editors that accept the classic `+<line>` cursor-position argument. Anything
+/// outside this list is invoked without a line hint — better than passing a
+/// flag the editor will treat as a filename.
+fn uses_plus_line_arg(cmd: &str) -> bool {
+    let base = std::path::Path::new(cmd)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    matches!(
+        base,
+        "vi" | "vim"
+            | "nvim"
+            | "gvim"
+            | "mvim"
+            | "nano"
+            | "pico"
+            | "ex"
+            | "view"
+            | "emacs"
+            | "emacsclient"
+            | "joe"
+            | "ne"
+            | "mg"
+            | "micro"
+            | "kak"
+            | "helix"
+            | "hx"
+    )
 }
 
 /// Emergency terminal restore for use inside a panic hook, which has no access
@@ -468,6 +733,18 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, cfg: AppConfi
     loop {
         terminal.draw(|f| draw(f, &mut app))?;
 
+        // Pending editor request: handled here (not inside handle_key) because
+        // suspending the TUI needs the `terminal` handle, and re-entering the
+        // alternate screen must be followed by `terminal.clear()` to reset
+        // ratatui's diff buffer — otherwise the screen stays blank on return.
+        if app.pending_editor {
+            app.pending_editor = false;
+            if let Err(e) = run_external_editor(terminal, &mut app) {
+                app.set_status(format!("editor error: {e}"));
+            }
+            continue;
+        }
+
         if event::poll(poll_interval)? {
             match event::read()? {
                 Event::Key(key)
@@ -480,6 +757,7 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, cfg: AppConfi
                     app.last_viewport_h = h;
                     app.re_render();
                 }
+                Event::Mouse(m) => handle_mouse(&mut app, m),
                 _ => {}
             }
         }
@@ -498,7 +776,7 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, cfg: AppConfi
         }
 
         // Fade status after a couple seconds.
-        if let Some((_, at)) = app.status {
+        if let Some((_, at, _)) = app.status {
             if at.elapsed() > Duration::from_secs(3) {
                 app.status = None;
             }
@@ -508,6 +786,79 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, cfg: AppConfi
     // Persist position on exit.
     app.cfg.store.set(&app.cfg.path, app.offset).ok();
     Ok(())
+}
+
+/// Translate wheel events into scroll deltas. In `RawCode` mode, Shift+wheel
+/// pans horizontally — the rest of the time the wheel scrolls the reader
+/// (or moves the line cursor inside `LinePick`).
+fn handle_mouse(app: &mut App, ev: MouseEvent) {
+    let step: isize = 3;
+    match (ev.kind, &app.mode) {
+        (MouseEventKind::ScrollUp, Mode::LinePick { .. }) => {
+            // Synthesize a `k` press-equivalent for line-pick.
+            move_line_pick(app, -1);
+        }
+        (MouseEventKind::ScrollDown, Mode::LinePick { .. }) => {
+            move_line_pick(app, 1);
+        }
+        (MouseEventKind::ScrollUp, Mode::RawCode { .. }) => move_raw_code(app, -1, 0),
+        (MouseEventKind::ScrollDown, Mode::RawCode { .. }) => move_raw_code(app, 1, 0),
+        (MouseEventKind::ScrollLeft, Mode::RawCode { .. }) => move_raw_code(app, 0, -8),
+        (MouseEventKind::ScrollRight, Mode::RawCode { .. }) => move_raw_code(app, 0, 8),
+        (MouseEventKind::ScrollUp, _) => app.scroll(-step),
+        (MouseEventKind::ScrollDown, _) => app.scroll(step),
+        _ => {}
+    }
+}
+
+/// Shared line-cursor mover for `LinePick` (mouse + keyboard paths share it).
+fn move_line_pick(app: &mut App, delta: isize) {
+    let Mode::LinePick {
+        block_idx,
+        line_idx,
+    } = &app.mode
+    else {
+        return;
+    };
+    let block_idx = *block_idx;
+    let old = *line_idx;
+    let len = app.rendered.code_blocks[block_idx].line_visuals.len();
+    if len == 0 {
+        return;
+    }
+    let new = (old as isize + delta).clamp(0, len as isize - 1) as usize;
+    app.mode = Mode::LinePick {
+        block_idx,
+        line_idx: new,
+    };
+    app.ensure_code_line_visible(block_idx, new);
+}
+
+fn move_raw_code(app: &mut App, dy: isize, dx: isize) {
+    let Mode::RawCode {
+        block_idx,
+        line_idx,
+        h_off,
+    } = &app.mode
+    else {
+        return;
+    };
+    let block_idx = *block_idx;
+    let block = &app.rendered.code_blocks[block_idx];
+    let total = block.code.split('\n').count().max(1);
+    let max_w = block
+        .code
+        .split('\n')
+        .map(|l| unicode_width::UnicodeWidthStr::width(l.replace('\t', "    ").as_str()))
+        .max()
+        .unwrap_or(0);
+    let new_line = (*line_idx as isize + dy).clamp(0, total as isize - 1) as usize;
+    let new_off = (*h_off as isize + dx).clamp(0, max_w.saturating_sub(1) as isize) as usize;
+    app.mode = Mode::RawCode {
+        block_idx,
+        line_idx: new_line,
+        h_off: new_off,
+    };
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
@@ -520,6 +871,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         Mode::Reading => handle_key_reading(app, key),
         Mode::Toc { .. } => handle_key_toc(app, key),
         Mode::Search { .. } => handle_key_search(app, key),
+        Mode::LinePick { .. } => handle_key_line_pick(app, key),
+        Mode::RawCode { .. } => handle_key_raw_code(app, key),
         Mode::Help => {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('q' | '?')) {
                 app.mode = Mode::Reading;
@@ -562,12 +915,179 @@ fn handle_key_reading(app: &mut App, key: KeyEvent) -> Result<bool> {
         KeyCode::Char('N') | KeyCode::BackTab | KeyCode::Left => app.advance_search(false),
         KeyCode::Char('c') if !app.search_matches.is_empty() => app.clear_search(),
         KeyCode::Char('y') => app.copy_current_code_block(),
+        KeyCode::Char('Y') => app.enter_line_pick(),
+        KeyCode::Char('R') => app.enter_raw_code(),
+        KeyCode::Char('r') => app.reload_from_disk(),
+        KeyCode::Char('e') => app.pending_editor = true,
         KeyCode::Char('?' | 'h') => {
             app.mode = Mode::Help;
         }
         _ => {}
     }
     Ok(false)
+}
+
+fn handle_key_line_pick(app: &mut App, key: KeyEvent) -> Result<bool> {
+    let (block_idx, mut line_idx) = {
+        let Mode::LinePick {
+            block_idx,
+            line_idx,
+        } = &app.mode
+        else {
+            return Ok(false);
+        };
+        (*block_idx, *line_idx)
+    };
+    let line_count = app.rendered.code_blocks[block_idx].line_visuals.len();
+    if line_count == 0 {
+        app.mode = Mode::Reading;
+        return Ok(false);
+    }
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = Mode::Reading;
+            return Ok(false);
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            line_idx = (line_idx + 1).min(line_count - 1);
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            line_idx = line_idx.saturating_sub(1);
+        }
+        KeyCode::Char('g') | KeyCode::Home => {
+            line_idx = 0;
+        }
+        KeyCode::Char('G') | KeyCode::End => {
+            line_idx = line_count - 1;
+        }
+        KeyCode::Char('y') | KeyCode::Enter => {
+            app.copy_source_line(block_idx, line_idx);
+            app.mode = Mode::LinePick {
+                block_idx,
+                line_idx,
+            };
+            return Ok(false);
+        }
+        KeyCode::Char('Y') => {
+            app.copy_whole_block(block_idx);
+            app.mode = Mode::LinePick {
+                block_idx,
+                line_idx,
+            };
+            return Ok(false);
+        }
+        KeyCode::Char('R') => {
+            app.mode = Mode::RawCode {
+                block_idx,
+                line_idx,
+                h_off: 0,
+            };
+            return Ok(false);
+        }
+        _ => {}
+    }
+
+    app.mode = Mode::LinePick {
+        block_idx,
+        line_idx,
+    };
+    app.ensure_code_line_visible(block_idx, line_idx);
+    Ok(false)
+}
+
+fn handle_key_raw_code(app: &mut App, key: KeyEvent) -> Result<bool> {
+    let (block_idx, mut line_idx, mut h_off) = {
+        let Mode::RawCode {
+            block_idx,
+            line_idx,
+            h_off,
+        } = &app.mode
+        else {
+            return Ok(false);
+        };
+        (*block_idx, *line_idx, *h_off)
+    };
+    let block = &app.rendered.code_blocks[block_idx];
+    let total_lines = block.code.split('\n').count().max(1);
+    let max_line_w = max_source_line_width(block);
+    let pan_step: usize = 8;
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q' | 'R') => {
+            app.mode = Mode::Reading;
+            return Ok(false);
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            line_idx = (line_idx + 1).min(total_lines - 1);
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            line_idx = line_idx.saturating_sub(1);
+        }
+        KeyCode::Char('g') | KeyCode::Home => {
+            line_idx = 0;
+        }
+        KeyCode::Char('G') | KeyCode::End => {
+            line_idx = total_lines - 1;
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            let max_off = max_line_w.saturating_sub(1);
+            h_off = (h_off + pan_step).min(max_off);
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            h_off = h_off.saturating_sub(pan_step);
+        }
+        KeyCode::Char('0') => {
+            h_off = 0;
+        }
+        KeyCode::Char('$') => {
+            h_off = max_line_w.saturating_sub(1);
+        }
+        KeyCode::Char('#') => {
+            app.raw_show_line_nums = !app.raw_show_line_nums;
+            app.mode = Mode::RawCode {
+                block_idx,
+                line_idx,
+                h_off,
+            };
+            return Ok(false);
+        }
+        KeyCode::Char('y') | KeyCode::Enter => {
+            app.copy_source_line(block_idx, line_idx);
+            app.mode = Mode::RawCode {
+                block_idx,
+                line_idx,
+                h_off,
+            };
+            return Ok(false);
+        }
+        KeyCode::Char('Y') => {
+            app.copy_whole_block(block_idx);
+            app.mode = Mode::RawCode {
+                block_idx,
+                line_idx,
+                h_off,
+            };
+            return Ok(false);
+        }
+        _ => {}
+    }
+
+    app.mode = Mode::RawCode {
+        block_idx,
+        line_idx,
+        h_off,
+    };
+    Ok(false)
+}
+
+fn max_source_line_width(block: &CodeBlockEntry) -> usize {
+    block
+        .code
+        .split('\n')
+        .map(|l| unicode_width::UnicodeWidthStr::width(l.replace('\t', "    ").as_str()))
+        .max()
+        .unwrap_or(0)
 }
 
 fn handle_key_toc(app: &mut App, key: KeyEvent) -> Result<bool> {
@@ -672,24 +1192,34 @@ enum SearchAction {
 /// topmost block whose line range intersects the viewport. If none is on
 /// screen, fall back to the nearest block above the viewport top, then the
 /// nearest one below.
-fn pick_code_block(
+fn pick_code_block_idx(
     blocks: &[CodeBlockEntry],
     view_top: usize,
     view_bottom: usize,
-) -> Option<&CodeBlockEntry> {
-    // Intersects the viewport.
-    if let Some(b) = blocks
+) -> Option<usize> {
+    if blocks.is_empty() {
+        return None;
+    }
+    if let Some((i, _)) = blocks
         .iter()
-        .find(|b| b.start_line <= view_bottom && b.end_line >= view_top)
+        .enumerate()
+        .find(|(_, b)| b.start_line <= view_bottom && b.end_line >= view_top)
     {
-        return Some(b);
+        return Some(i);
     }
-    // Nearest above.
-    let above = blocks.iter().rev().find(|b| b.end_line < view_top);
-    if above.is_some() {
-        return above;
+    if let Some((i, _)) = blocks
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, b)| b.end_line < view_top)
+    {
+        return Some(i);
     }
-    blocks.iter().find(|b| b.start_line > view_bottom)
+    blocks
+        .iter()
+        .enumerate()
+        .find(|(_, b)| b.start_line > view_bottom)
+        .map(|(i, _)| i)
 }
 
 /// Case-insensitive substring match against TOC entry titles. Returns the
@@ -764,7 +1294,12 @@ fn draw(f: &mut ratatui::Frame<'_>, app: &mut App) {
         Mode::Toc { selected } => draw_toc_overlay(f, app, *selected, size),
         Mode::Search { input } => draw_search_overlay(f, app, input, size),
         Mode::Help => draw_help_overlay(f, app, size),
-        Mode::Reading => {}
+        Mode::RawCode {
+            block_idx,
+            line_idx,
+            h_off,
+        } => draw_raw_code_overlay(f, app, *block_idx, *line_idx, *h_off, size),
+        Mode::Reading | Mode::LinePick { .. } => {}
     }
 }
 
@@ -788,6 +1323,34 @@ fn draw_body(f: &mut ratatui::Frame<'_>, app: &App, rect: Rect) {
                     .map(|s| Span::styled(s.content.into_owned(), s.style.patch(hl_style)))
                     .collect();
                 display[rel] = Line::from(marked).style(app.theme.base_style());
+            }
+        }
+    }
+
+    // LinePick: reverse-highlight every visual row of the selected source line
+    // that intersects the viewport. The block may soft-wrap, so a single
+    // source line can cover multiple rows — highlight them all so the wrapped
+    // continuation (`↪ …`) is visually part of the same selection.
+    if let Mode::LinePick {
+        block_idx,
+        line_idx,
+    } = &app.mode
+    {
+        if let Some(block) = app.rendered.code_blocks.get(*block_idx) {
+            if let Some(&(vs, ve)) = block.line_visuals.get(*line_idx) {
+                let hl_style = Style::default().add_modifier(Modifier::REVERSED);
+                for row in vs..=ve {
+                    if (start..end).contains(&row) {
+                        let rel = row - start;
+                        let original = display[rel].clone();
+                        let marked: Vec<Span<'static>> = original
+                            .spans
+                            .into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(), s.style.patch(hl_style)))
+                            .collect();
+                        display[rel] = Line::from(marked).style(app.theme.base_style());
+                    }
+                }
             }
         }
     }
@@ -824,10 +1387,29 @@ fn draw_footer(f: &mut ratatui::Frame<'_>, app: &App, rect: Rect) {
     ));
 
     // Priority for the trailing slot:
-    //   1. Active search match counter (always show while matches exist).
-    //   2. Transient status message.
-    //   3. Help hint.
-    let trailing = if !app.search_matches.is_empty() {
+    //   1. LinePick mode hint (context-specific — always show while picking).
+    //   2. Active search match counter.
+    //   3. Transient status message.
+    //   4. Default help hint.
+    let trailing = if let Mode::LinePick {
+        block_idx,
+        line_idx,
+    } = &app.mode
+    {
+        let total = app
+            .rendered
+            .code_blocks
+            .get(*block_idx)
+            .map_or(0, |b| b.line_visuals.len());
+        Some((
+            format!(
+                "line {}/{}  (j/k move · y copy · Y all · R raw · Esc exit)",
+                line_idx + 1,
+                total.max(1),
+            ),
+            accent,
+        ))
+    } else if !app.search_matches.is_empty() {
         Some((
             format!(
                 "match {}/{}  (n/N or Tab/\u{2190}\u{2192}, c clear)",
@@ -836,8 +1418,15 @@ fn draw_footer(f: &mut ratatui::Frame<'_>, app: &App, rect: Rect) {
             ),
             accent,
         ))
-    } else if let Some((s, _)) = app.status.as_ref() {
-        Some((s.clone(), accent))
+    } else if let Some((s, at, kind)) = app.status.as_ref() {
+        // Success messages flash with a reversed accent for ~700ms so a
+        // successful copy or edit feels confirmed, then fade to plain accent.
+        let style = if *kind == StatusKind::Success && at.elapsed() < Duration::from_millis(700) {
+            accent.add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        } else {
+            accent
+        };
+        Some((s.clone(), style))
     } else {
         Some(("? help  q quit".to_string(), dim))
     };
@@ -944,9 +1533,190 @@ fn draw_search_overlay(f: &mut ratatui::Frame<'_>, app: &App, input: &str, area:
     f.render_widget(para, inner);
 }
 
+fn draw_raw_code_overlay(
+    f: &mut ratatui::Frame<'_>,
+    app: &App,
+    block_idx: usize,
+    line_idx: usize,
+    h_off: usize,
+    area: Rect,
+) {
+    let Some(block) = app.rendered.code_blocks.get(block_idx) else {
+        return;
+    };
+    let source_lines: Vec<String> = block.code.split('\n').map(String::from).collect();
+    let total = source_lines.len().max(1);
+
+    let margin_x: u16 = 2;
+    let margin_y: u16 = 1;
+    let w = area.width.saturating_sub(margin_x * 2).max(10);
+    let h = area.height.saturating_sub(margin_y * 2).max(4);
+    let rect = Rect {
+        x: area.x + margin_x,
+        y: area.y + margin_y,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+
+    let lang_label = if block.lang.is_empty() {
+        "code".to_string()
+    } else {
+        block.lang.clone()
+    };
+    let title = format!(
+        " {lang_label} \u{2014} line {}/{} \u{2014} col {} ",
+        line_idx + 1,
+        total,
+        h_off + 1,
+    );
+    let block_widget = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(app.theme.base_style())
+        .border_style(app.theme.rule_style());
+    let inner = block_widget.inner(rect);
+    f.render_widget(block_widget, rect);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    // Reserve the final row inside the border for the hint line.
+    let content_rows = inner.height.saturating_sub(1) as usize;
+    let full_cols = inner.width as usize;
+    // Reserve a gutter for source-line numbers when enabled. Width is
+    // `digits(total) + 2` to leave a one-column visual gap between the
+    // number and the code.
+    let gutter_w = if app.raw_show_line_nums {
+        digit_count(total) + 2
+    } else {
+        0
+    };
+    let content_cols = full_cols.saturating_sub(gutter_w);
+    if content_rows == 0 || content_cols == 0 {
+        return;
+    }
+
+    // Vertical scroll: try to center the cursor line; otherwise clamp so
+    // scrolling off the ends still shows the full window.
+    let top = if total <= content_rows {
+        0
+    } else {
+        let half = content_rows / 2;
+        line_idx
+            .saturating_sub(half)
+            .min(total.saturating_sub(content_rows))
+    };
+
+    let hl_style = Style::default().add_modifier(Modifier::REVERSED);
+    let base = app.theme.base_style();
+    let dim = app.theme.dim_style();
+    let code_bg = app.theme.code_style();
+
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(content_rows + 1);
+    for (i, src) in source_lines.iter().enumerate().skip(top).take(content_rows) {
+        let normalized = src.replace('\t', "    ");
+        let visible = slice_by_display_cols(&normalized, h_off, content_cols);
+        let vis_w = unicode_width::UnicodeWidthStr::width(visible.as_str());
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if gutter_w > 0 {
+            let num = format!("{:>w$}  ", i + 1, w = gutter_w - 2);
+            spans.push(Span::styled(num, dim));
+        }
+        spans.extend(highlight_line(&visible, &block.lang, app.theme));
+        let pad_cols = content_cols.saturating_sub(vis_w);
+        if pad_cols > 0 {
+            spans.push(Span::styled(" ".repeat(pad_cols), code_bg));
+        }
+        if i == line_idx {
+            spans = spans
+                .into_iter()
+                .map(|s| Span::styled(s.content.into_owned(), s.style.patch(hl_style)))
+                .collect();
+        }
+        lines.push(Line::from(spans).style(base));
+    }
+    // Pad out empty rows so the overlay fills its box consistently.
+    while lines.len() < content_rows {
+        lines.push(Line::styled(" ".repeat(full_cols), code_bg));
+    }
+
+    let hint = "j/k line  h/l pan  0/$ home/end  # line-nums  y copy line  Y all  Esc close";
+    let hint_text = truncate_display(hint, full_cols);
+    lines.push(Line::styled(hint_text, dim));
+
+    let para = Paragraph::new(lines).style(base);
+    f.render_widget(para, inner);
+}
+
+/// Skip `skip` display columns, then keep up to `keep` display columns.
+/// Wide characters that straddle `skip` are dropped entirely (no partial
+/// char); a leading space is inserted if the skip cut mid-wide-char so
+/// columns still line up.
+fn slice_by_display_cols(s: &str, skip: usize, keep: usize) -> String {
+    let mut out = String::new();
+    let mut skipped = 0usize;
+    let mut kept = 0usize;
+    let mut chars = s.chars().peekable();
+    while let Some(&ch) = chars.peek() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if skipped < skip {
+            if skipped + w > skip {
+                // A wide char straddles the skip boundary; drop it and pad.
+                let pad = skipped + w - skip;
+                for _ in 0..pad.min(keep.saturating_sub(kept)) {
+                    out.push(' ');
+                    kept += 1;
+                }
+                chars.next();
+                skipped += w;
+                continue;
+            }
+            skipped += w;
+            chars.next();
+            continue;
+        }
+        if kept + w > keep {
+            break;
+        }
+        out.push(ch);
+        kept += w;
+        chars.next();
+    }
+    out
+}
+
+/// Number of decimal digits needed to display `n` (minimum 1 — so zero
+/// still reserves a visible column).
+fn digit_count(n: usize) -> usize {
+    if n == 0 {
+        1
+    } else {
+        (n as f64).log10().floor() as usize + 1
+    }
+}
+
+fn truncate_display(s: &str, max_cols: usize) -> String {
+    if unicode_width::UnicodeWidthStr::width(s) <= max_cols {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut w = 0usize;
+    for ch in s.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > max_cols {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out
+}
+
 fn draw_help_overlay(f: &mut ratatui::Frame<'_>, app: &App, area: Rect) {
-    let w = 52u16.min(area.width.saturating_sub(4));
-    let h = 22u16.min(area.height.saturating_sub(4));
+    let w = 58u16.min(area.width.saturating_sub(4));
+    let h = 26u16.min(area.height.saturating_sub(4));
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
     let rect = Rect {
@@ -982,6 +1752,10 @@ fn draw_help_overlay(f: &mut ratatui::Frame<'_>, app: &App, area: Rect) {
         ("Shift-Tab / \u{2190}", "prev match"),
         ("c", "clear active search"),
         ("y", "copy code block in view"),
+        ("Y", "pick & copy a single code line"),
+        ("R", "raw code view (no wrap, h/l pan)"),
+        ("r", "reload current file"),
+        ("e", "open in $EDITOR at this heading"),
         ("?", "toggle this help"),
         ("q / Esc", "quit / close overlay"),
     ];
@@ -1046,16 +1820,18 @@ mod tests {
                 end_line: 20,
                 lang: "rust".into(),
                 code: "a".into(),
+                line_visuals: vec![],
             },
             CodeBlockEntry {
                 start_line: 30,
                 end_line: 40,
                 lang: "py".into(),
                 code: "b".into(),
+                line_visuals: vec![],
             },
         ];
-        let b = pick_code_block(&blocks, 15, 25).unwrap();
-        assert_eq!(b.lang, "rust");
+        let i = pick_code_block_idx(&blocks, 15, 25).unwrap();
+        assert_eq!(blocks[i].lang, "rust");
     }
 
     #[test]
@@ -1066,16 +1842,18 @@ mod tests {
                 end_line: 7,
                 lang: "rust".into(),
                 code: "a".into(),
+                line_visuals: vec![],
             },
             CodeBlockEntry {
                 start_line: 50,
                 end_line: 60,
                 lang: "py".into(),
                 code: "b".into(),
+                line_visuals: vec![],
             },
         ];
-        let b = pick_code_block(&blocks, 20, 25).unwrap();
-        assert_eq!(b.lang, "rust");
+        let i = pick_code_block_idx(&blocks, 20, 25).unwrap();
+        assert_eq!(blocks[i].lang, "rust");
     }
 
     #[test]
@@ -1085,9 +1863,10 @@ mod tests {
             end_line: 60,
             lang: "py".into(),
             code: "b".into(),
+            line_visuals: vec![],
         }];
-        let b = pick_code_block(&blocks, 0, 10).unwrap();
-        assert_eq!(b.lang, "py");
+        let i = pick_code_block_idx(&blocks, 0, 10).unwrap();
+        assert_eq!(blocks[i].lang, "py");
     }
 
     #[test]
@@ -1097,11 +1876,13 @@ mod tests {
                 level: 1,
                 title: "Installation".into(),
                 line: 10,
+                source_line: 1,
             },
             TocEntry {
                 level: 2,
                 title: "Install".into(),
                 line: 42,
+                source_line: 1,
             },
         ];
         // "install" is a substring of both but an exact case-insensitive match
@@ -1116,16 +1897,30 @@ mod tests {
                 level: 1,
                 title: "Code blocks".into(),
                 line: 100,
+                source_line: 1,
             },
             TocEntry {
                 level: 2,
                 title: "Quoting text".into(),
                 line: 200,
+                source_line: 1,
             },
         ];
         assert_eq!(find_heading(&toc, "quot"), Some(200));
         assert_eq!(find_heading(&toc, "nonexistent"), None);
         assert_eq!(find_heading(&toc, ""), None);
+    }
+
+    #[test]
+    fn slice_by_display_cols_skip_and_keep() {
+        // Skip 5 cols, keep 3 cols out of a long ASCII line.
+        assert_eq!(slice_by_display_cols("abcdefghij", 5, 3), "fgh");
+        // Skip past end → empty.
+        assert_eq!(slice_by_display_cols("abc", 10, 5), "");
+        // Keep exceeds line length → returns full tail.
+        assert_eq!(slice_by_display_cols("abc", 1, 10), "bc");
+        // Zero-width skip returns the prefix up to `keep`.
+        assert_eq!(slice_by_display_cols("hello world", 0, 5), "hello");
     }
 
     #[test]
@@ -1135,16 +1930,19 @@ mod tests {
                 level: 1,
                 title: "A".into(),
                 line: 0,
+                source_line: 1,
             },
             TocEntry {
                 level: 2,
                 title: "B".into(),
                 line: 10,
+                source_line: 1,
             },
             TocEntry {
                 level: 2,
                 title: "C".into(),
                 line: 20,
+                source_line: 1,
             },
         ];
         assert_eq!(current_toc_index(&toc, 0), 0);

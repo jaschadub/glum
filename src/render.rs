@@ -33,6 +33,12 @@ pub struct CodeBlockEntry {
     pub end_line: usize,
     pub lang: String,
     pub code: String,
+    /// Inclusive `(start, end)` visual-row range in `Rendered::lines` for each
+    /// source line of `code` (as split on `\n`, after trimming trailing
+    /// newlines). A line that soft-wraps spans multiple visual rows; a line
+    /// rendered unwrapped has `start == end`. Enables per-source-line
+    /// navigation and copy independent of visual wrap state.
+    pub line_visuals: Vec<(usize, usize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +47,9 @@ pub struct TocEntry {
     pub title: String,
     /// Index into `Rendered::lines` where this heading starts.
     pub line: usize,
+    /// 1-based line number in the *source* markdown. Used by the external-
+    /// editor handoff so `$EDITOR +<n> <path>` lands on the heading itself.
+    pub source_line: usize,
 }
 
 /// Entry point. Produces styled lines wrapped to `measure` columns.
@@ -58,9 +67,22 @@ pub fn render(
     opts.insert(Options::ENABLE_FOOTNOTES);
     opts.insert(Options::ENABLE_TASKLISTS);
 
-    let parser = Parser::new_ext(md, opts);
+    // Byte offsets of each `\n` in the source — used to translate the byte
+    // offsets reported by pulldown-cmark back to 1-based source line numbers
+    // for TOC entries (so `e` can open the editor at the right line).
+    let newline_offsets: Vec<usize> = md
+        .char_indices()
+        .filter_map(|(i, c)| (c == '\n').then_some(i))
+        .collect();
+    let source_line_at =
+        |byte_offset: usize| -> usize { newline_offsets.partition_point(|&n| n < byte_offset) + 1 };
+
+    let parser = Parser::new_ext(md, opts).into_offset_iter();
     let mut r = Renderer::new(measure, theme, layout, wrap_code);
-    for event in parser {
+    for (event, range) in parser {
+        if matches!(event, Event::Start(Tag::Heading { .. })) {
+            r.pending_heading_src_line = Some(source_line_at(range.start));
+        }
         r.handle(event);
     }
     r.finish()
@@ -97,6 +119,8 @@ struct Renderer {
     // Block state
     in_heading: Option<u8>,
     heading_text: String,
+    /// Latched by the caller before `handle` sees a Heading Start event.
+    pending_heading_src_line: Option<usize>,
     in_code_block: bool,
     code_lang: String,
     code_buf: String,
@@ -129,6 +153,7 @@ impl Renderer {
             current_style: theme.base_style(),
             in_heading: None,
             heading_text: String::new(),
+            pending_heading_src_line: None,
             in_code_block: false,
             code_lang: String::new(),
             code_buf: String::new(),
@@ -348,11 +373,13 @@ impl Renderer {
                 let heading = std::mem::take(&mut self.heading_text);
                 self.flush_heading(n, &heading);
                 let title = heading.trim().to_string();
+                let source_line = self.pending_heading_src_line.take().unwrap_or(1);
                 if !title.is_empty() {
                     self.toc.push(TocEntry {
                         level: n,
                         title,
                         line: start_line,
+                        source_line,
                     });
                 }
                 self.in_heading = None;
@@ -756,7 +783,10 @@ impl Renderer {
         let cont_marker = " \u{21AA} "; //  ↪
         let cont_w = unicode_width::UnicodeWidthStr::width(cont_marker);
 
+        let mut line_visuals: Vec<(usize, usize)> = Vec::new();
+
         for raw_line in trimmed.split('\n') {
+            let src_visual_start = self.out.len();
             let normalized = raw_line.replace('\t', "    ");
             let line_w = unicode_width::UnicodeWidthStr::width(normalized.as_str());
 
@@ -774,6 +804,7 @@ impl Renderer {
                     pad_style,
                     base_style,
                 );
+                line_visuals.push((src_visual_start, self.out.len() - 1));
                 continue;
             }
 
@@ -806,6 +837,7 @@ impl Renderer {
                 let visible = truncate_to_width(&normalized, code_cols);
                 self.push_code_line(&pad_str, &visible, code_cols, &lang, pad_style, base_style);
             }
+            line_visuals.push((src_visual_start, self.out.len() - 1));
         }
 
         self.out
@@ -817,6 +849,7 @@ impl Renderer {
             end_line,
             lang: lang_label,
             code: code.trim_end_matches('\n').to_string(),
+            line_visuals,
         });
     }
 
@@ -1198,6 +1231,38 @@ mod tests {
         let r = render(md, 60, plain(), LayoutName::Minimal, true);
         let any_code_line = r.lines.iter().any(|l| l.to_string().contains("fn main"));
         assert!(any_code_line);
+    }
+
+    #[test]
+    fn code_block_line_visuals_track_source_lines() {
+        // Short lines: one visual row per source line, all rows inside the
+        // block's [start_line+1, end_line-1] range (rules excluded).
+        let md = "```\nfn main() {\n    println!(\"hi\");\n}\n```\n";
+        let r = render(md, 60, plain(), LayoutName::Minimal, true);
+        let b = r.code_blocks.first().expect("one code block");
+        assert_eq!(b.line_visuals.len(), 3, "three source lines");
+        for (vs, ve) in &b.line_visuals {
+            assert_eq!(vs, ve, "short line should occupy exactly one visual row");
+            assert!(*vs > b.start_line && *ve < b.end_line);
+        }
+        // Source lines recoverable from code.
+        let src: Vec<&str> = b.code.split('\n').collect();
+        assert_eq!(src.len(), 3);
+    }
+
+    #[test]
+    fn code_block_line_visuals_span_wrapped_rows() {
+        // A very long single line with wrap on: one source line but the
+        // visual range must span multiple rows.
+        let long = "x".repeat(200);
+        let md = format!("```\n{long}\n```\n");
+        let r = render(&md, 40, plain(), LayoutName::Minimal, true);
+        let b = r.code_blocks.first().expect("one code block");
+        assert_eq!(b.line_visuals.len(), 1, "single source line");
+        let (vs, ve) = b.line_visuals[0];
+        assert!(ve > vs, "wrapped line should span multiple visual rows");
+        // The raw code still stores the full, unbroken source.
+        assert_eq!(b.code, long);
     }
 
     #[test]
