@@ -26,16 +26,27 @@ use crate::render::{self, CodeBlockEntry, Rendered, TocEntry};
 use crate::theme::{Theme, ThemeName};
 use crate::watch::FileWatcher;
 
+/// Full configuration needed to launch the TUI. Built by `main.rs` from the
+/// parsed CLI plus the persistence store, then handed to [`run`].
 pub struct AppConfig {
+    /// Canonical path of the file being read (or `<stdin>` for piped input).
     pub path: PathBuf,
+    /// File contents already loaded into memory; the renderer reads this
+    /// string, not the path.
     pub source: String,
+    /// Target reading column width (clap-validated to 20..=200).
     pub measure: u16,
+    /// Initial color theme (may be restored from the persistence store).
     pub theme: ThemeName,
+    /// Initial typographic layout.
     pub layout: LayoutName,
+    /// Initial horizontal alignment of the reading column.
     pub align: Align,
     /// When true, long code lines soft-wrap; when false, they truncate with `…`.
     pub wrap_code: bool,
+    /// Persistence handle for reading position and remembered preferences.
     pub store: PositionStore,
+    /// Path shown in the footer (typically the relative-to-cwd form).
     pub display_name: String,
     /// Optional opening behavior set from CLI flags.
     pub initial: InitialState,
@@ -47,9 +58,12 @@ pub struct AppConfig {
     pub mouse: bool,
 }
 
+/// Horizontal alignment of the reading column within the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Align {
+    /// Symmetric margins — classic reader-mode feel.
     Center,
+    /// Column anchored to the left (leaves a 2-col gutter on the left).
     Left,
     /// Anchors the column to the right margin. Column placement only — does
     /// not apply bidirectional text layout to RTL scripts.
@@ -66,6 +80,7 @@ impl Align {
         }
     }
 
+    /// Short lowercase name for the status bar and persisted prefs.
     pub fn label(self) -> &'static str {
         match self {
             Self::Center => "center",
@@ -74,6 +89,7 @@ impl Align {
         }
     }
 
+    /// Parse a label back into an `Align`. Accepts `centre` as an alias.
     pub fn from_label(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "center" | "centre" => Some(Self::Center),
@@ -94,11 +110,17 @@ impl From<crate::cli::AlignArg> for Align {
     }
 }
 
+/// Optional opening-state overrides set from CLI flags — applied once after
+/// the initial render so the reader lands where the user asked.
 #[derive(Debug, Default, Clone)]
 pub struct InitialState {
+    /// Pre-populated search query (opens the search overlay with matches).
     pub search: Option<String>,
+    /// Case-insensitive substring of a heading title to jump to.
     pub heading: Option<String>,
+    /// If true, ignore any saved scroll position and start at the top.
     pub reset_position: bool,
+    /// If true, open with the TOC overlay visible.
     pub open_toc: bool,
 }
 
@@ -534,6 +556,10 @@ impl App {
     }
 }
 
+/// Entry point: take over the terminal, run the reader loop until the user
+/// quits (or `Ctrl-C`), and restore the terminal on exit. Installs a panic
+/// hook so a crash inside the TUI still exits raw mode cleanly. Returns
+/// `Err` only on irrecoverable terminal I/O failure.
 pub fn run(cfg: AppConfig) -> Result<()> {
     // Install a panic hook so a crash in the TUI still restores the terminal
     // before the default hook prints the message. This prevents a panic from
@@ -1858,6 +1884,8 @@ fn shorten_middle(s: &str, max: usize) -> String {
     out
 }
 
+/// Short, cwd-relative form of `path` suitable for the status bar. Falls
+/// back to the full path when it can't be made relative.
 pub fn display_name_for(path: &Path) -> String {
     if let Ok(cwd) = std::env::current_dir() {
         if let Ok(stripped) = path.strip_prefix(&cwd) {

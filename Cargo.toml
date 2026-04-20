@@ -12,6 +12,12 @@ keywords = ["markdown", "tui", "reader", "cli"]
 categories = ["command-line-utilities", "text-processing"]
 build = "build.rs"
 
+[package.metadata.docs.rs]
+# Ensure docs.rs builds the full API surface with the same flags we use
+# locally. `--cfg docsrs` lets items mark themselves docs-only if needed.
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lib]
 name = "glum_lib"
 path = "src/lib.rs"

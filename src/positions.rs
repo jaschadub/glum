@@ -41,12 +41,20 @@ struct Store {
     wrap_code: Option<bool>,
 }
 
+/// One stored reading position: the scroll offset in visual rows plus the
+/// wall-clock time of the last update (used for LRU pruning).
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct Entry {
+    /// Visual-row offset at the top of the viewport when the user last
+    /// closed the file.
     pub offset: usize,
+    /// Unix seconds at the time the offset was written.
     pub updated_at_unix: u64,
 }
 
+/// Handle to the on-disk position + preferences store. Construct one with
+/// [`PositionStore::open`] or the no-op [`PositionStore::disabled`]
+/// variant used when `--no-remember` is active.
 pub struct PositionStore {
     path: PathBuf,
     inner: Store,
@@ -81,11 +89,15 @@ impl PositionStore {
         }
     }
 
+    /// Look up the saved [`Entry`] for `file`, if any.
     pub fn get(&self, file: &Path) -> Option<Entry> {
         let key = key_for(file)?;
         self.inner.positions.get(&key).copied()
     }
 
+    /// Persist `offset` as the last-known position for `file`. No-ops when
+    /// the store is disabled. The store auto-prunes to at most 1024 entries
+    /// by LRU timestamp.
     pub fn set(&mut self, file: &Path, offset: usize) -> Result<()> {
         if !self.enabled {
             return Ok(());
@@ -120,10 +132,12 @@ impl PositionStore {
         self.flush()
     }
 
+    /// The last typographic-layout label the user was reading with.
     pub fn layout(&self) -> Option<&str> {
         self.inner.layout.as_deref()
     }
 
+    /// Persist `layout` as the last-used layout. No-op when disabled.
     pub fn set_layout(&mut self, layout: &str) -> Result<()> {
         if !self.enabled {
             return Ok(());
@@ -135,10 +149,12 @@ impl PositionStore {
         self.flush()
     }
 
+    /// The last column-alignment label the user was reading with.
     pub fn align(&self) -> Option<&str> {
         self.inner.align.as_deref()
     }
 
+    /// Persist `align` as the last-used alignment. No-op when disabled.
     pub fn set_align(&mut self, align: &str) -> Result<()> {
         if !self.enabled {
             return Ok(());
@@ -150,10 +166,13 @@ impl PositionStore {
         self.flush()
     }
 
+    /// The last code-wrap preference the user was reading with (`true` =
+    /// soft-wrap with `↪`, `false` = truncate with `…`).
     pub fn wrap_code(&self) -> Option<bool> {
         self.inner.wrap_code
     }
 
+    /// Persist the current code-wrap preference. No-op when disabled.
     pub fn set_wrap_code(&mut self, wrap: bool) -> Result<()> {
         if !self.enabled {
             return Ok(());

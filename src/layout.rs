@@ -15,13 +15,17 @@ use ratatui::style::{Modifier, Style};
 
 use crate::theme::Theme;
 
+/// Name of a typographic layout preset. Toggle at runtime with `L`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutName {
+    /// Understated typography: quiet hierarchy, single thin rule under H1.
     Minimal,
+    /// Strong hierarchy: heading prefixes, heavy rules, per-level indent.
     Vivid,
 }
 
 impl LayoutName {
+    /// Toggle between the two presets (used by the `L` keybinding).
     pub fn next(self) -> Self {
         match self {
             Self::Minimal => Self::Vivid,
@@ -29,6 +33,7 @@ impl LayoutName {
         }
     }
 
+    /// Short lowercase name used on the status bar and in persisted prefs.
     pub fn label(self) -> &'static str {
         match self {
             Self::Minimal => "minimal",
@@ -36,6 +41,7 @@ impl LayoutName {
         }
     }
 
+    /// Parse a label back into a `LayoutName`. Unknown labels return `None`.
     pub fn from_label(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "minimal" => Some(Self::Minimal),
@@ -49,21 +55,36 @@ impl LayoutName {
 /// these to produce the actual `Line`s; this indirection keeps the render
 /// pipeline a dumb consumer of layout-specific choices.
 pub struct HeadingDecor {
+    /// Blank lines inserted before the heading body.
     pub blank_before: u8,
+    /// Blank lines inserted after the heading body.
     pub blank_after: u8,
+    /// Optional horizontal rule drawn above the heading.
     pub top_rule: Option<RuleSpec>,
+    /// Optional horizontal rule drawn below the heading.
     pub bottom_rule: Option<RuleSpec>,
+    /// Prefix glyph + trailing space placed before the title (e.g. `"§ "`).
     pub prefix: String,
+    /// Columns of left indent applied to the heading (first + continuation).
     pub indent: usize,
+    /// Text style applied to the heading title.
     pub style: Style,
+    /// Whether to uppercase the title text before rendering.
     pub uppercase: bool,
 }
 
+/// A full-width horizontal rule: a single repeat character plus the style
+/// used to color it.
 pub struct RuleSpec {
+    /// Character repeated across the measure to form the rule.
     pub ch: char,
+    /// Style applied to the rule.
     pub style: Style,
 }
 
+/// Look up heading decorations for the given layout, level (1–6), and
+/// theme. The returned [`HeadingDecor`] fully describes the visual
+/// treatment; the renderer only has to execute it.
 pub fn decorate_heading(layout: LayoutName, level: u8, theme: Theme) -> HeadingDecor {
     match layout {
         LayoutName::Minimal => decor_minimal(level, theme),

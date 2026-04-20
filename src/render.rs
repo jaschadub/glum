@@ -20,8 +20,14 @@ use crate::typography::smarten;
 /// A single rendered document, consisting of styled lines plus a table of
 /// contents and a list of code blocks (for clipboard copy).
 pub struct Rendered {
+    /// Pre-styled, pre-wrapped visual rows. Index these directly by
+    /// viewport offset.
     pub lines: Vec<Line<'static>>,
+    /// Headings in document order, each carrying both the visual row
+    /// index and the source line number for editor handoff.
     pub toc: Vec<TocEntry>,
+    /// Fenced code blocks in document order, with raw source preserved
+    /// so clipboard copies are independent of visual wrapping.
     pub code_blocks: Vec<CodeBlockEntry>,
 }
 
@@ -29,9 +35,14 @@ pub struct Rendered {
 /// and the raw (unhighlighted, untruncated) source text.
 #[derive(Debug, Clone)]
 pub struct CodeBlockEntry {
+    /// Visual-row index of the top rule (the `── lang ──` line).
     pub start_line: usize,
+    /// Visual-row index of the bottom rule.
     pub end_line: usize,
+    /// Fenced info string (e.g. `"rust"`, `"py"`), lowercased.
     pub lang: String,
+    /// Original source text — never mutated by wrap / highlight, so the
+    /// clipboard path can hand the user exactly what they authored.
     pub code: String,
     /// Inclusive `(start, end)` visual-row range in `Rendered::lines` for each
     /// source line of `code` (as split on `\n`, after trimming trailing
@@ -41,9 +52,13 @@ pub struct CodeBlockEntry {
     pub line_visuals: Vec<(usize, usize)>,
 }
 
+/// One entry in the table of contents — a heading in document order.
 #[derive(Debug, Clone)]
 pub struct TocEntry {
+    /// Heading depth (1 for `#`, 2 for `##`, …, 6 for `######`).
     pub level: u8,
+    /// Heading title, typographically smartened, with inline markup
+    /// flattened to plain text.
     pub title: String,
     /// Index into `Rendered::lines` where this heading starts.
     pub line: usize,

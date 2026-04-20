@@ -1,3 +1,10 @@
+//! Command-line argument definitions for the `glum` binary.
+//!
+//! Parsed with [`clap`]. The binary reads [`Cli`] with `Cli::parse()` and
+//! converts the value-enum wrappers ([`AlignArg`], [`LayoutArg`],
+//! [`ThemeArg`]) into the library's own enums via `From` impls before
+//! constructing an [`crate::app::AppConfig`].
+
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
@@ -76,9 +83,14 @@ pub struct Cli {
     pub mouse: bool,
 }
 
+/// CLI wrapper for [`crate::app::Align`] so it can be used as a
+/// [`clap::ValueEnum`] without leaking the library type into clap's
+/// derive macro.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum AlignArg {
+    /// Center the reading column — symmetric margins, classic reader-mode.
     Center,
+    /// Anchor the reading column to the left edge (2-col gutter).
     Left,
     /// Anchors the reading column to the right margin. Useful as a column
     /// placement hint for RTL scripts; note that glum does not perform
@@ -87,9 +99,13 @@ pub enum AlignArg {
     Right,
 }
 
+/// CLI wrapper for [`crate::layout::LayoutName`] (see that type for the
+/// semantics of each preset).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum LayoutArg {
+    /// Understated typography.
     Minimal,
+    /// Strong heading hierarchy with prefixes and heavy rules.
     Vivid,
 }
 
@@ -102,12 +118,19 @@ impl From<LayoutArg> for LayoutName {
     }
 }
 
+/// CLI wrapper for [`crate::theme::ThemeName`] (see that type for the
+/// semantics of each theme).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ThemeArg {
+    /// Off-white paper background.
     Light,
+    /// Near-black background.
     Dark,
+    /// Warm brown paper tones.
     Sepia,
+    /// Deep blue-leaning dark theme.
     Night,
+    /// ANSI-16 fallback.
     Plain,
 }
 
