@@ -4,7 +4,7 @@ All notable changes to glum are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.1] — 2026-04-19
 
 ### Changed
 
@@ -19,6 +19,17 @@ All notable changes to glum are documented in this file. Format based on
 - First-run theme is now picked from the terminal's advertised
   background (`$COLORFGBG`) — light terminals open with `light`
   instead of `dark`. `--theme` and the remembered theme still win.
+
+### Docs
+
+- Full library-surface documentation at
+  [docs.rs/glum](https://docs.rs/glum). Added a crate-level landing
+  page with a `no_run` example of rendering markdown to ratatui lines,
+  plus doc comments on every public item across `theme`, `layout`,
+  `cli`, `app`, `render`, and `positions`. `[package.metadata.docs.rs]`
+  now sets `all-features` and `--cfg docsrs`.
+
+[0.2.1]: https://github.com/jaschadub/glum/releases/tag/v0.2.1
 
 ## [0.2.0] — 2026-04-19
 

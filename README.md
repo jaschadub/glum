@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/jaschadub/glum/main/scripts/install
 
 This downloads the latest signed release archive for your platform, verifies
 its SHA-256, and installs `glum` into `$HOME/.local/bin`. Override the prefix
-with `GLUM_PREFIX=/usr/local`, pin a version with `GLUM_VERSION=v0.2.0`.
+with `GLUM_PREFIX=/usr/local`, pin a version with `GLUM_VERSION=v0.2.1`.
 
 ### Any platform — via cargo
 
