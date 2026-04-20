@@ -49,13 +49,14 @@ fn real_main() -> Result<()> {
 
     let display_name = app::display_name_for(&path);
 
-    // Explicit --theme wins. Otherwise fall back to the remembered theme, then
-    // to `dark` on first run.
+    // Explicit --theme wins. Otherwise fall back to the remembered theme,
+    // then to a first-run default picked from the terminal's advertised
+    // background ($COLORFGBG) so light terminals don't open with dark glum.
     let theme = cli
         .theme
         .map(ThemeName::from)
         .or_else(|| store.theme().and_then(ThemeName::from_label))
-        .unwrap_or(ThemeName::Dark);
+        .unwrap_or_else(adaptive_first_run_theme);
 
     let layout = cli
         .layout
@@ -112,6 +113,28 @@ fn real_main() -> Result<()> {
     };
 
     app::run(cfg)
+}
+
+/// First-run theme pick: inspect `$COLORFGBG` (set by most modern terminal
+/// emulators as `fg;bg` or `fg;…;bg`) so a light-background terminal opens
+/// glum with the `light` theme instead of the historical `dark` default.
+/// Unknown or missing values fall back to `dark`.
+fn adaptive_first_run_theme() -> ThemeName {
+    if let Ok(val) = std::env::var("COLORFGBG") {
+        // Last token is the background ANSI index; terminals use 7 or 15 for
+        // light backgrounds.
+        if let Some(bg) = val
+            .rsplit(';')
+            .next()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+        {
+            if matches!(bg, 7 | 15) {
+                return ThemeName::Light;
+            }
+            return ThemeName::Dark;
+        }
+    }
+    ThemeName::Dark
 }
 
 fn load_input(p: &Path) -> Result<(PathBuf, String)> {

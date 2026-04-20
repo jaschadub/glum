@@ -4,6 +4,22 @@ All notable changes to glum are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Overlays (TOC, Search, Help, Raw code) now use rounded borders — a
+  softer frame that matches glum's reader-first tone.
+- TOC is rendered as a tree with `│ ├ └` connectors instead of plain
+  indentation, so deep documents stay scannable.
+- Vivid layout uses a heavy top rule (`━`) on code blocks to echo the
+  heading hierarchy; minimal keeps the lighter `─`.
+- Unordered list bullets graduate by depth in vivid layout
+  (`• → ◦ → ▫`); minimal stays with a single `•` for quieter pages.
+- First-run theme is now picked from the terminal's advertised
+  background (`$COLORFGBG`) — light terminals open with `light`
+  instead of `dark`. `--theme` and the remembered theme still win.
+
 ## [0.2.0] — 2026-04-19
 
 ### Added

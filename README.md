@@ -109,7 +109,9 @@ glum [OPTIONS] <PATH>
 ```
 
 If `--theme`, `--layout`, or `--align` is omitted, the last value you used is
-restored (first-run defaults: `dark` / `minimal` / `center`).
+restored. First-run defaults: `minimal` / `center`, plus `light` or
+`dark` based on the terminal's advertised background (via `$COLORFGBG`,
+falling back to `dark`).
 
 Pass `-` as the path to read from stdin.
 

@@ -15,7 +15,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Terminal;
 
 use crate::clipboard;
@@ -1456,6 +1456,7 @@ fn draw_toc_overlay(f: &mut ratatui::Frame<'_>, app: &App, selected: usize, area
     let block = Block::default()
         .title(" Table of contents ")
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .style(app.theme.base_style())
         .border_style(app.theme.rule_style());
     let inner = block.inner(rect);
@@ -1464,18 +1465,81 @@ fn draw_toc_overlay(f: &mut ratatui::Frame<'_>, app: &App, selected: usize, area
     let mut lines: Vec<Line<'static>> = Vec::new();
     let start = selected.saturating_sub(inner.height as usize / 2);
     let end = (start + inner.height as usize).min(app.rendered.toc.len());
+    let dim = app.theme.dim_style();
+    let base = app.theme.base_style();
     for (i, entry) in app.rendered.toc[start..end].iter().enumerate() {
         let abs = start + i;
-        let indent = "  ".repeat(entry.level.saturating_sub(1) as usize);
-        let content = format!("{indent}{}", entry.title);
-        let mut style = app.theme.base_style();
-        if abs == selected {
-            style = style.add_modifier(Modifier::REVERSED);
+        let (guides, branch) = toc_tree_prefix(&app.rendered.toc, abs);
+        let hl = abs == selected;
+        let title_style = if hl {
+            base.add_modifier(Modifier::REVERSED)
+        } else {
+            base
+        };
+        let guide_style = if hl {
+            dim.add_modifier(Modifier::REVERSED)
+        } else {
+            dim
+        };
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if !guides.is_empty() {
+            spans.push(Span::styled(guides, guide_style));
         }
-        lines.push(Line::styled(content, style));
+        if !branch.is_empty() {
+            spans.push(Span::styled(branch, guide_style));
+        }
+        spans.push(Span::styled(entry.title.clone(), title_style));
+        lines.push(Line::from(spans).style(base));
     }
-    let para = Paragraph::new(lines).style(app.theme.base_style());
+    let para = Paragraph::new(lines).style(base);
     f.render_widget(para, inner);
+}
+
+/// Compute the tree-style prefix for TOC entry `i`: `(guides, branch)` where
+/// `guides` is the vertical-bars column showing which ancestor levels still
+/// have unprocessed siblings, and `branch` is the `├ ` or `└ ` connector for
+/// the entry itself. Glum's TOC is a flat list ordered by document order, so
+/// we can resolve both with forward scans.
+fn toc_tree_prefix(toc: &[TocEntry], i: usize) -> (String, String) {
+    let entry = &toc[i];
+    let lvl = entry.level as usize;
+    if lvl == 0 {
+        return (String::new(), String::new());
+    }
+    // For each ancestor level `l` strictly above this entry, a `│ ` column
+    // when any later entry has the same level `l` *before* something shallower
+    // closes the section — that means the ancestor at `l` still has siblings.
+    let mut guides = String::new();
+    for l in 1..lvl {
+        let mut has_sibling = false;
+        for entry_j in toc.iter().skip(i + 1) {
+            let lj = entry_j.level as usize;
+            if lj < l {
+                break;
+            }
+            if lj == l {
+                has_sibling = true;
+                break;
+            }
+        }
+        guides.push_str(if has_sibling { "\u{2502} " } else { "  " });
+    }
+    // The branch glyph at this entry's own level depends on whether *this*
+    // entry is the last of its siblings at `lvl` (before the next shallower
+    // heading). `└ ` for last, `├ ` otherwise.
+    let mut is_last = true;
+    for entry_j in toc.iter().skip(i + 1) {
+        let lj = entry_j.level as usize;
+        if lj < lvl {
+            break;
+        }
+        if lj == lvl {
+            is_last = false;
+            break;
+        }
+    }
+    let branch = if is_last { "\u{2514} " } else { "\u{251C} " }.to_string();
+    (guides, branch)
 }
 
 fn draw_search_overlay(f: &mut ratatui::Frame<'_>, app: &App, input: &str, area: Rect) {
@@ -1512,6 +1576,7 @@ fn draw_search_overlay(f: &mut ratatui::Frame<'_>, app: &App, input: &str, area:
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .style(app.theme.base_style())
         .border_style(app.theme.rule_style());
     let inner = block.inner(rect);
@@ -1573,6 +1638,7 @@ fn draw_raw_code_overlay(
     let block_widget = Block::default()
         .title(title)
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .style(app.theme.base_style())
         .border_style(app.theme.rule_style());
     let inner = block_widget.inner(rect);
@@ -1729,6 +1795,7 @@ fn draw_help_overlay(f: &mut ratatui::Frame<'_>, app: &App, area: Rect) {
     let block = Block::default()
         .title(" Help ")
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .style(app.theme.base_style())
         .border_style(app.theme.rule_style());
     let inner = block.inner(rect);
@@ -1921,6 +1988,57 @@ mod tests {
         assert_eq!(slice_by_display_cols("abc", 1, 10), "bc");
         // Zero-width skip returns the prefix up to `keep`.
         assert_eq!(slice_by_display_cols("hello world", 0, 5), "hello");
+    }
+
+    #[test]
+    fn toc_tree_prefix_draws_guides_and_branches() {
+        let toc = vec![
+            TocEntry {
+                level: 1,
+                title: "A".into(),
+                line: 0,
+                source_line: 1,
+            },
+            TocEntry {
+                level: 2,
+                title: "A.1".into(),
+                line: 1,
+                source_line: 2,
+            },
+            TocEntry {
+                level: 2,
+                title: "A.2".into(),
+                line: 2,
+                source_line: 3,
+            },
+            TocEntry {
+                level: 1,
+                title: "B".into(),
+                line: 3,
+                source_line: 4,
+            },
+        ];
+        // A is the first of two level-1 items → ├
+        assert_eq!(
+            toc_tree_prefix(&toc, 0),
+            (String::new(), "\u{251C} ".into())
+        );
+        // A.1 has a later sibling (A.2) before a shallower heading → ├; guide
+        // shows A's column as a vertical bar (A still has a later sibling B).
+        assert_eq!(
+            toc_tree_prefix(&toc, 1),
+            ("\u{2502} ".into(), "\u{251C} ".into())
+        );
+        // A.2 is the last child of A (next heading is level 1) → └
+        assert_eq!(
+            toc_tree_prefix(&toc, 2),
+            ("\u{2502} ".into(), "\u{2514} ".into())
+        );
+        // B is the last level-1 → └
+        assert_eq!(
+            toc_tree_prefix(&toc, 3),
+            (String::new(), "\u{2514} ".into())
+        );
     }
 
     #[test]

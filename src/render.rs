@@ -300,13 +300,27 @@ impl Renderer {
                 });
             }
             Tag::Item => {
+                let depth = self.list_stack.len();
+                let vivid = matches!(self.layout, LayoutName::Vivid);
                 if let Some(ctx) = self.list_stack.last_mut() {
                     let prefix = if let Some(n) = ctx.ordered {
                         let p = format!("{n}. ");
                         ctx.ordered = Some(n + 1);
                         p
                     } else {
-                        "\u{2022} ".to_string()
+                        // Vivid layout graduates unordered bullets by depth so
+                        // nested lists read as a hierarchy at a glance; minimal
+                        // keeps a single glyph for a quieter page.
+                        let glyph = if vivid {
+                            match depth.saturating_sub(1) {
+                                0 => "\u{2022}", // •
+                                1 => "\u{25E6}", // ◦
+                                _ => "\u{25AB}", // ▫
+                            }
+                        } else {
+                            "\u{2022}"
+                        };
+                        format!("{glyph} ")
                     };
                     self.pending_list_marker = Some(prefix);
                 }
@@ -752,11 +766,20 @@ impl Renderer {
             0
         };
 
+        // Vivid layout uses a heavy top rule (━) to reinforce the hierarchy
+        // — the heading rules already use heavier glyphs in vivid, so code
+        // blocks should match. Minimal keeps the lighter ─ on both rules.
+        let top_rule_ch = if matches!(self.layout, LayoutName::Vivid) {
+            "\u{2501}"
+        } else {
+            "\u{2500}"
+        };
+
         // Top rule with optional language label and optional copy hint.
         let mut top_spans: Vec<Span<'static>> = Vec::new();
         if lang_label.is_empty() {
             let dashes_w = width.saturating_sub(copy_hint_w);
-            top_spans.push(Span::styled("\u{2500}".repeat(dashes_w), rule_style));
+            top_spans.push(Span::styled(top_rule_ch.repeat(dashes_w), rule_style));
             if show_copy_hint {
                 top_spans.push(Span::styled(copy_hint.to_string(), label_style));
             }
@@ -765,9 +788,9 @@ impl Renderer {
             let lbl_w = unicode_width::UnicodeWidthStr::width(lbl.as_str());
             let leading_w = 3;
             let mid_w = width.saturating_sub(leading_w + lbl_w + copy_hint_w).max(1);
-            top_spans.push(Span::styled("\u{2500}".repeat(leading_w), rule_style));
+            top_spans.push(Span::styled(top_rule_ch.repeat(leading_w), rule_style));
             top_spans.push(Span::styled(lbl, label_style));
-            top_spans.push(Span::styled("\u{2500}".repeat(mid_w), rule_style));
+            top_spans.push(Span::styled(top_rule_ch.repeat(mid_w), rule_style));
             if show_copy_hint {
                 top_spans.push(Span::styled(copy_hint.to_string(), label_style));
             }
