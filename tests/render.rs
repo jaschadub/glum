@@ -28,7 +28,7 @@ fn main() {
 
 See the [site](https://example.com).
 "#;
-    let r = render(md, 60, plain(), LayoutName::Minimal, true);
+    let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
     let text: String = r
         .lines
         .iter()
@@ -45,14 +45,14 @@ See the [site](https://example.com).
 
 #[test]
 fn empty_input_is_safe() {
-    let r = render("", 60, plain(), LayoutName::Minimal, true);
+    let r = render("", 60, 60, plain(), LayoutName::Minimal, true);
     let _ = r; // no panic
 }
 
 #[test]
 fn very_long_lines_are_wrapped() {
     let md = "word ".repeat(200);
-    let r = render(&md, 40, plain(), LayoutName::Minimal, true);
+    let r = render(&md, 40, 40, plain(), LayoutName::Minimal, true);
     for line in &r.lines {
         assert!(line.width() <= 42, "line was {}: {}", line.width(), line);
     }

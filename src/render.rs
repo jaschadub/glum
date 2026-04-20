@@ -29,6 +29,10 @@ pub struct Rendered {
     /// Fenced code blocks in document order, with raw source preserved
     /// so clipboard copies are independent of visual wrapping.
     pub code_blocks: Vec<CodeBlockEntry>,
+    /// Widest visual row in `lines`, measured in display columns. Prose
+    /// rows are bounded by the reading measure; tables may exceed it, so
+    /// the display can grow its drawing rect to this width before clipping.
+    pub max_width: usize,
 }
 
 /// A recorded fenced code block: its visual line range in `Rendered::lines`
@@ -68,14 +72,23 @@ pub struct TocEntry {
 }
 
 /// Entry point. Produces styled lines wrapped to `measure` columns.
+///
+/// `table_width` is the budget tables are allowed to use. Passing a value
+/// wider than `measure` lets tables extend past the prose reading column
+/// when the terminal can accommodate it — useful for many-column tables
+/// whose headers would otherwise be chopped character-by-character. Pass
+/// `measure` itself if you want the historical behavior (tables constrained
+/// to the prose measure).
 pub fn render(
     md: &str,
     measure: usize,
+    table_width: usize,
     theme: Theme,
     layout: LayoutName,
     wrap_code: bool,
 ) -> Rendered {
     let measure = measure.max(20);
+    let table_width = table_width.max(measure);
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TABLES);
@@ -93,7 +106,7 @@ pub fn render(
         |byte_offset: usize| -> usize { newline_offsets.partition_point(|&n| n < byte_offset) + 1 };
 
     let parser = Parser::new_ext(md, opts).into_offset_iter();
-    let mut r = Renderer::new(measure, theme, layout, wrap_code);
+    let mut r = Renderer::new(measure, table_width, theme, layout, wrap_code);
     for (event, range) in parser {
         if matches!(event, Event::Start(Tag::Heading { .. })) {
             r.pending_heading_src_line = Some(source_line_at(range.start));
@@ -119,6 +132,7 @@ struct ListCtx {
 
 struct Renderer {
     measure: usize,
+    table_width: usize,
     theme: Theme,
     layout: LayoutName,
     wrap_code: bool,
@@ -154,9 +168,16 @@ struct Renderer {
 }
 
 impl Renderer {
-    fn new(measure: usize, theme: Theme, layout: LayoutName, wrap_code: bool) -> Self {
+    fn new(
+        measure: usize,
+        table_width: usize,
+        theme: Theme,
+        layout: LayoutName,
+        wrap_code: bool,
+    ) -> Self {
         Self {
             measure,
+            table_width,
             theme,
             layout,
             wrap_code,
@@ -938,8 +959,11 @@ impl Renderer {
             return;
         }
 
-        let inner = self.inner_width();
-        let widths = compute_column_widths(&head, &rows, col_count, inner);
+        // Tables use `table_width` rather than the prose measure so a table
+        // with many columns can take advantage of a wide terminal instead of
+        // being squeezed down to 3-char columns and breaking header words
+        // character-by-character.
+        let widths = compute_column_widths(&head, &rows, col_count, self.table_width);
 
         let theme = self.theme;
         let head_style = theme.base_style().add_modifier(Modifier::BOLD);
@@ -1020,10 +1044,23 @@ impl Renderer {
         // Flush anything dangling.
         self.flush_paragraph();
 
+        let max_width = self
+            .out
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                    .sum::<usize>()
+            })
+            .max()
+            .unwrap_or(0);
+
         Rendered {
             lines: self.out,
             toc: self.toc,
             code_blocks: self.code_blocks,
+            max_width,
         }
     }
 }
@@ -1238,7 +1275,7 @@ mod tests {
 
     #[test]
     fn renders_paragraph() {
-        let r = render("Hello world.", 40, plain(), LayoutName::Minimal, true);
+        let r = render("Hello world.", 40, 40, plain(), LayoutName::Minimal, true);
         assert!(!r.lines.is_empty());
         assert!(r.lines[0].width() > 0);
     }
@@ -1246,7 +1283,7 @@ mod tests {
     #[test]
     fn wraps_long_paragraph() {
         let text = "word ".repeat(50);
-        let r = render(&text, 20, plain(), LayoutName::Minimal, true);
+        let r = render(&text, 20, 20, plain(), LayoutName::Minimal, true);
         assert!(r.lines.len() > 2);
         for line in &r.lines {
             assert!(line.width() <= 20 + 1, "line too wide: {}", line.width());
@@ -1256,7 +1293,7 @@ mod tests {
     #[test]
     fn headings_in_toc() {
         let md = "# Top\n\nSome text.\n\n## Sub\n\nMore.\n";
-        let r = render(md, 60, plain(), LayoutName::Minimal, true);
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
         assert_eq!(r.toc.len(), 2);
         assert_eq!(r.toc[0].title, "Top");
         assert_eq!(r.toc[0].level, 1);
@@ -1266,7 +1303,7 @@ mod tests {
     #[test]
     fn code_blocks_render() {
         let md = "```\nfn main() {}\n```\n";
-        let r = render(md, 60, plain(), LayoutName::Minimal, true);
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
         let any_code_line = r.lines.iter().any(|l| l.to_string().contains("fn main"));
         assert!(any_code_line);
     }
@@ -1276,7 +1313,7 @@ mod tests {
         // Short lines: one visual row per source line, all rows inside the
         // block's [start_line+1, end_line-1] range (rules excluded).
         let md = "```\nfn main() {\n    println!(\"hi\");\n}\n```\n";
-        let r = render(md, 60, plain(), LayoutName::Minimal, true);
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
         let b = r.code_blocks.first().expect("one code block");
         assert_eq!(b.line_visuals.len(), 3, "three source lines");
         for (vs, ve) in &b.line_visuals {
@@ -1294,7 +1331,7 @@ mod tests {
         // visual range must span multiple rows.
         let long = "x".repeat(200);
         let md = format!("```\n{long}\n```\n");
-        let r = render(&md, 40, plain(), LayoutName::Minimal, true);
+        let r = render(&md, 40, 40, plain(), LayoutName::Minimal, true);
         let b = r.code_blocks.first().expect("one code block");
         assert_eq!(b.line_visuals.len(), 1, "single source line");
         let (vs, ve) = b.line_visuals[0];
@@ -1306,7 +1343,7 @@ mod tests {
     #[test]
     fn lists_use_bullet() {
         let md = "- one\n- two\n";
-        let r = render(md, 60, plain(), LayoutName::Minimal, true);
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()
@@ -1319,7 +1356,7 @@ mod tests {
     #[test]
     fn links_inline_url_after_text() {
         let md = "See [here](https://example.com) for details.\n";
-        let r = render(md, 60, plain(), LayoutName::Minimal, true);
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()
@@ -1337,7 +1374,7 @@ mod tests {
     #[test]
     fn autolinks_do_not_duplicate_url() {
         let md = "Visit <https://example.com> today.\n";
-        let r = render(md, 80, plain(), LayoutName::Minimal, true);
+        let r = render(md, 80, 80, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()
@@ -1355,7 +1392,7 @@ mod tests {
     #[test]
     fn anchor_links_do_not_show_inline_url() {
         let md = "See [the section](#intro) for details.\n";
-        let r = render(md, 80, plain(), LayoutName::Minimal, true);
+        let r = render(md, 80, 80, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()
@@ -1375,7 +1412,7 @@ mod tests {
         // the only cue that the text points to another file. We render the URL
         // inline so the reader can see (and the terminal can hyperlink) it.
         let md = "[Español](README.es.md) | [中文](README.zh-cn.md)\n";
-        let r = render(md, 80, plain(), LayoutName::Minimal, true);
+        let r = render(md, 80, 80, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()
@@ -1395,7 +1432,7 @@ mod tests {
     #[test]
     fn tables_render_header_and_rows() {
         let md = "| A | B |\n|---|---|\n| one | two |\n| three | four |\n";
-        let r = render(md, 80, plain(), LayoutName::Minimal, true);
+        let r = render(md, 80, 80, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()
@@ -1418,7 +1455,7 @@ mod tests {
 | a | one two three four five six seven eight nine ten |
 | b | short |
 ";
-        let r = render(md, 40, plain(), LayoutName::Minimal, true);
+        let r = render(md, 40, 40, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()
@@ -1440,7 +1477,7 @@ mod tests {
 | 1 | 2 |
 | 3 | 4 |
 ";
-        let r = render(md, 80, plain(), LayoutName::Minimal, true);
+        let r = render(md, 80, 80, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()
@@ -1456,7 +1493,7 @@ mod tests {
     #[test]
     fn tables_wrap_long_cells_instead_of_truncating() {
         let md = "| id | description |\n|----|-------------|\n| a | one two three four five six seven eight nine ten |\n";
-        let r = render(md, 40, plain(), LayoutName::Minimal, true);
+        let r = render(md, 40, 40, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()
@@ -1483,9 +1520,47 @@ mod tests {
     }
 
     #[test]
+    fn wide_table_budget_keeps_headers_readable() {
+        // Many-column table whose headers don't fit into a narrow prose
+        // measure. With table_width=200 the full header words must survive
+        // intact — no character-by-character chopping as happens when
+        // tables are forced to share the measure budget.
+        let md = "\
+| tag | passed | task_tok | ref_tok | task_it | ref_it | stored | ref_cap | errs | timeouts | max_it | est_cost |
+|-----|--------|----------|---------|---------|--------|--------|---------|------|----------|--------|----------|
+| opus | 11/12 | 91568 | 48389 | 45 | 24 | 26 | 0 | 0 | 0 | 0 | $4.62 |
+";
+        let r = render(md, 72, 200, plain(), LayoutName::Minimal, true);
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Every header word must appear whole on some single line — not split
+        // across wrapped rows.
+        for word in [
+            "passed", "task_tok", "ref_tok", "task_it", "ref_it", "stored", "timeouts",
+        ] {
+            let whole_on_a_line = r.lines.iter().any(|l| l.to_string().contains(word));
+            assert!(
+                whole_on_a_line,
+                "header {word} was split across lines:\n{text}"
+            );
+        }
+        // The rendered table should actually use the wide budget, not the
+        // prose measure — widest row must exceed 72.
+        assert!(
+            r.max_width > 72,
+            "expected wide table to exceed prose measure; got max_width={}",
+            r.max_width
+        );
+    }
+
+    #[test]
     fn tables_with_inline_code_cells() {
         let md = "| name | value |\n|------|-------|\n| `x` | 1 |\n";
-        let r = render(md, 80, plain(), LayoutName::Minimal, true);
+        let r = render(md, 80, 80, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()
@@ -1512,7 +1587,7 @@ mod tests {
     #[test]
     fn blockquote_has_gutter() {
         let md = "> quoted.\n";
-        let r = render(md, 60, plain(), LayoutName::Minimal, true);
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()
@@ -1525,7 +1600,7 @@ mod tests {
     #[test]
     fn heading_text_does_not_leak_into_following_paragraph() {
         let md = "### C-3. panics in enterprise context compaction\n\n- **C-3.** `todo!()` panics in enterprise context compaction\n";
-        let r = render(md, 80, plain(), LayoutName::Minimal, true);
+        let r = render(md, 80, 80, plain(), LayoutName::Minimal, true);
         let lines: Vec<String> = r.lines.iter().map(ToString::to_string).collect();
         // First rendered non-empty line should be the heading text, clean.
         let heading_line = lines.iter().find(|l| !l.trim().is_empty()).unwrap();
@@ -1551,7 +1626,7 @@ mod tests {
     #[test]
     fn heading_with_inline_code_does_not_leak() {
         let md = "### A `todo!()` heading\n\nBody paragraph.\n";
-        let r = render(md, 60, plain(), LayoutName::Minimal, true);
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
         let lines: Vec<String> = r.lines.iter().map(ToString::to_string).collect();
         let body = lines.iter().find(|l| l.contains("Body")).unwrap();
         assert!(!body.contains("todo!()"), "heading code leaked: {body}");
@@ -1561,7 +1636,7 @@ mod tests {
     #[test]
     fn smart_substitution_preserves_text() {
         let md = "He said \"yes\" -- probably...\n";
-        let r = render(md, 60, plain(), LayoutName::Minimal, true);
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()
@@ -1576,7 +1651,7 @@ mod tests {
     #[test]
     fn html_tags_are_hidden() {
         let md = "Hello <em>world</em> and <div>x</div>.\n";
-        let r = render(md, 60, plain(), LayoutName::Minimal, true);
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
         let text: String = r
             .lines
             .iter()

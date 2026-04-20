@@ -45,6 +45,7 @@
 //! let r = render::render(
 //!     md,
 //!     /* measure */ 72,
+//!     /* table_width */ 72,
 //!     Theme::resolve(ThemeName::Plain),
 //!     LayoutName::Minimal,
 //!     /* wrap_code */ true,

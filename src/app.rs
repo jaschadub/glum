@@ -110,6 +110,18 @@ impl From<crate::cli::AlignArg> for Align {
     }
 }
 
+/// Table width budget: how many display columns tables may use. The reading
+/// `measure` is a prose legibility choice — artificially narrowing a wide
+/// table to it forces headers like "passed" to break character-by-character.
+/// So tables are allowed to grow toward the terminal width, capped to keep
+/// column arithmetic sane and to leave a small visual gutter.
+fn table_budget(measure: u16, term_w: u16) -> usize {
+    const MARGIN: u16 = 4;
+    const CAP: u16 = 200;
+    let usable = term_w.saturating_sub(MARGIN).min(CAP);
+    usable.max(measure) as usize
+}
+
 /// Optional opening-state overrides set from CLI flags — applied once after
 /// the initial render so the reader lands where the user asked.
 #[derive(Debug, Default, Clone)]
@@ -164,6 +176,10 @@ struct App {
     rendered: Rendered,
     offset: usize,
     last_viewport_h: u16,
+    /// Last terminal width used for rendering. Tables are sized against
+    /// this (not just the prose measure), so a meaningful resize triggers
+    /// a re-render to recompute table column widths against the new budget.
+    last_render_width: u16,
     mode: Mode,
     search_matches: Vec<usize>,
     search_cursor: usize,
@@ -186,9 +202,11 @@ impl App {
         let layout_name = cfg.layout;
         let align = cfg.align;
         let wrap_code = cfg.wrap_code;
+        let term_w = terminal::size().map_or(cfg.measure, |(w, _)| w);
         let rendered = render::render(
             &cfg.source,
             cfg.measure as usize,
+            table_budget(cfg.measure, term_w),
             theme,
             layout_name,
             wrap_code,
@@ -211,6 +229,7 @@ impl App {
             rendered,
             offset: saved_offset,
             last_viewport_h: 0,
+            last_render_width: term_w,
             mode: Mode::Reading,
             search_matches: Vec::new(),
             search_cursor: 0,
@@ -232,6 +251,7 @@ impl App {
                 self.rendered = render::render(
                     &self.cfg.source,
                     self.cfg.measure as usize,
+                    table_budget(self.cfg.measure, self.last_render_width),
                     self.theme,
                     self.layout_name,
                     self.wrap_code,
@@ -350,6 +370,7 @@ impl App {
         self.rendered = render::render(
             &self.cfg.source,
             self.cfg.measure as usize,
+            table_budget(self.cfg.measure, self.last_render_width),
             self.theme,
             self.layout_name,
             self.wrap_code,
@@ -779,9 +800,18 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, cfg: AppConfi
                 {
                     break;
                 }
-                Event::Resize(_, h) => {
+                Event::Resize(w, h) => {
                     app.last_viewport_h = h;
-                    app.re_render();
+                    // Re-render on any width change so table column widths
+                    // get recomputed against the new terminal budget. The
+                    // rendered output itself doesn't depend on height, so
+                    // height-only resizes could skip this — but re_render is
+                    // cheap and makes the common "drag to resize" path feel
+                    // consistent.
+                    if w != app.last_render_width {
+                        app.last_render_width = w;
+                        app.re_render();
+                    }
                 }
                 Event::Mouse(m) => handle_mouse(&mut app, m),
                 _ => {}
@@ -1294,7 +1324,12 @@ fn draw(f: &mut ratatui::Frame<'_>, app: &mut App) {
     let footer_rect = vertical[1];
 
     let target = app.cfg.measure;
-    let wrap_width = target.min(body_rect.width.saturating_sub(2));
+    let body_w = body_rect.width.saturating_sub(2);
+    // Grow the drawing rect beyond the reading measure when any rendered
+    // row (typically a table) needs it. Prose rows stay shorter than the
+    // measure so the widened rect only affects layouts with wide tables.
+    let rendered_max = u16::try_from(app.rendered.max_width).unwrap_or(u16::MAX);
+    let wrap_width = target.max(rendered_max).min(body_w);
     let remaining = body_rect.width.saturating_sub(wrap_width);
     let left_margin = match app.align {
         Align::Center => remaining / 2,
