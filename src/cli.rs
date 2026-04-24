@@ -147,6 +147,10 @@ pub enum ThemeArg {
     Sepia,
     /// Deep blue-leaning dark theme.
     Night,
+    /// Vibrant light — cream paper, emerald headings, coral accent.
+    Meadow,
+    /// Vibrant dark — midnight indigo, mint headings, rose/lavender accents.
+    Aurora,
     /// ANSI-16 fallback.
     Plain,
 }
@@ -158,6 +162,8 @@ impl From<ThemeArg> for ThemeName {
             ThemeArg::Dark => Self::Dark,
             ThemeArg::Sepia => Self::Sepia,
             ThemeArg::Night => Self::Night,
+            ThemeArg::Meadow => Self::Meadow,
+            ThemeArg::Aurora => Self::Aurora,
             ThemeArg::Plain => Self::Plain,
         }
     }

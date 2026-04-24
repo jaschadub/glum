@@ -1,11 +1,13 @@
 //! Color themes and resolved palettes.
 //!
-//! Five built-in themes cycle with the `T` key at runtime:
+//! Seven built-in themes cycle with the `T` key at runtime:
 //! [`ThemeName::Light`], [`ThemeName::Dark`], [`ThemeName::Sepia`],
-//! [`ThemeName::Night`], and [`ThemeName::Plain`] (ANSI-16 fallback).
-//! [`Theme::resolve`] turns a name into a concrete [`Theme`] whose
-//! `*_style` methods produce ready-to-use [`ratatui::style::Style`] values
-//! for each rendering role (heading, code, quote, link, rule, etc.).
+//! [`ThemeName::Night`], [`ThemeName::Meadow`] (vibrant light),
+//! [`ThemeName::Aurora`] (vibrant dark), and [`ThemeName::Plain`]
+//! (ANSI-16 fallback). [`Theme::resolve`] turns a name into a concrete
+//! [`Theme`] whose `*_style` methods produce ready-to-use
+//! [`ratatui::style::Style`] values for each rendering role (heading,
+//! code, quote, link, rule, etc.).
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -21,17 +23,29 @@ pub enum ThemeName {
     Sepia,
     /// Deep blue-leaning dark theme with cool accents.
     Night,
+    /// Vibrant light theme: cream paper, emerald headings, coral accents.
+    /// More saturated than `Light` — good when you want a splash of color
+    /// without moving to a dark background.
+    Meadow,
+    /// Vibrant dark theme: midnight indigo, mint-emerald headings,
+    /// rose/lavender accents. Northern-lights palette — more colorful
+    /// than `Dark` or `Night` but tuned to stay readable.
+    Aurora,
     /// ANSI-16 fallback — no RGB; safe everywhere including dumb terminals.
     Plain,
 }
 
 impl ThemeName {
-    /// Cycle to the next theme (used by `T` keybinding at runtime).
+    /// Cycle to the next theme (used by `T` keybinding at runtime). Vibrant
+    /// variants sit next to their tonal neighbors so `T` flips quickly
+    /// between a muted theme and its saturated counterpart.
     pub fn next(self) -> Self {
         match self {
-            Self::Light => Self::Dark,
-            Self::Dark => Self::Sepia,
-            Self::Sepia => Self::Night,
+            Self::Light => Self::Meadow,
+            Self::Meadow => Self::Sepia,
+            Self::Sepia => Self::Dark,
+            Self::Dark => Self::Aurora,
+            Self::Aurora => Self::Night,
             Self::Night => Self::Plain,
             Self::Plain => Self::Light,
         }
@@ -44,6 +58,8 @@ impl ThemeName {
             Self::Dark => "dark",
             Self::Sepia => "sepia",
             Self::Night => "night",
+            Self::Meadow => "meadow",
+            Self::Aurora => "aurora",
             Self::Plain => "plain",
         }
     }
@@ -55,6 +71,8 @@ impl ThemeName {
             "dark" => Some(Self::Dark),
             "sepia" => Some(Self::Sepia),
             "night" => Some(Self::Night),
+            "meadow" => Some(Self::Meadow),
+            "aurora" => Some(Self::Aurora),
             "plain" => Some(Self::Plain),
             _ => None,
         }
@@ -177,6 +195,50 @@ impl Theme {
                 syn_number: Color::Rgb(204, 172, 140),
                 syn_type: Color::Rgb(132, 184, 224),
                 syn_fn: Color::Rgb(140, 168, 232),
+            },
+            // Meadow: cream paper with grass-green/teal and a coral accent.
+            // Body text is a deep pine so color roles can saturate without
+            // fighting the foreground; link indigo is the only cool role to
+            // keep the palette feeling like a garden under warm light.
+            ThemeName::Meadow => Self {
+                bg: Some(Color::Rgb(248, 248, 236)),
+                fg: Color::Rgb(28, 44, 36),
+                dim: Color::Rgb(118, 132, 116),
+                accent: Color::Rgb(216, 96, 116),
+                heading: Color::Rgb(24, 92, 70),
+                code_fg: Color::Rgb(48, 68, 52),
+                code_bg: Some(Color::Rgb(234, 240, 222)),
+                quote: Color::Rgb(68, 116, 104),
+                link: Color::Rgb(56, 92, 176),
+                rule: Color::Rgb(192, 204, 172),
+                syn_keyword: Color::Rgb(172, 44, 96),
+                syn_string: Color::Rgb(92, 128, 40),
+                syn_comment: Color::Rgb(140, 152, 128),
+                syn_number: Color::Rgb(188, 88, 32),
+                syn_type: Color::Rgb(40, 104, 124),
+                syn_fn: Color::Rgb(108, 60, 152),
+            },
+            // Aurora: midnight indigo with mint/emerald headings and a
+            // rose-lavender accent. Keywords sit on the pink end, strings on
+            // mint — two mid-saturation bands separated by enough hue
+            // distance that code scans cleanly at speed.
+            ThemeName::Aurora => Self {
+                bg: Some(Color::Rgb(14, 18, 32)),
+                fg: Color::Rgb(222, 224, 236),
+                dim: Color::Rgb(128, 134, 158),
+                accent: Color::Rgb(232, 128, 180),
+                heading: Color::Rgb(148, 232, 200),
+                code_fg: Color::Rgb(208, 214, 228),
+                code_bg: Some(Color::Rgb(22, 26, 42)),
+                quote: Color::Rgb(140, 196, 200),
+                link: Color::Rgb(132, 212, 240),
+                rule: Color::Rgb(72, 76, 108),
+                syn_keyword: Color::Rgb(232, 124, 188),
+                syn_string: Color::Rgb(148, 224, 172),
+                syn_comment: Color::Rgb(124, 124, 156),
+                syn_number: Color::Rgb(244, 192, 124),
+                syn_type: Color::Rgb(124, 220, 232),
+                syn_fn: Color::Rgb(188, 168, 248),
             },
             ThemeName::Plain => Self {
                 bg: None,

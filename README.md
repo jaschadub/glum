@@ -114,7 +114,7 @@ cosign verify-blob \
 glum [OPTIONS] <PATH>
 
   --measure <N>             column width (20..200, default 72)
-  --theme <NAME>            light, dark, sepia, night, plain
+  --theme <NAME>            light, dark, sepia, night, meadow, aurora, plain
   --layout <NAME>           minimal or vivid
   --align <NAME>            center, left, or right
   -s, --search <QUERY>      open with search pre-populated; jump to first match
