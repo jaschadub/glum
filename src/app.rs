@@ -256,7 +256,7 @@ impl App {
                     self.layout_name,
                     self.wrap_code,
                 );
-                self.offset = self.offset.min(self.total_lines().saturating_sub(1));
+                self.offset = self.offset.min(self.max_offset());
                 // Invalidate any pinned search match (line indices are stale).
                 if !self.search_matches.is_empty() {
                     self.search_matches.clear();
@@ -325,8 +325,7 @@ impl App {
     }
 
     fn jump_to(&mut self, line: usize) {
-        let max = self.total_lines().saturating_sub(1);
-        self.offset = line.min(max);
+        self.offset = line.min(self.max_offset());
     }
 
     fn page_size(&self) -> usize {
@@ -335,8 +334,27 @@ impl App {
         body.saturating_sub(2).max(1)
     }
 
+    /// Largest `offset` that still keeps the last document line visible at
+    /// the bottom of the viewport. Scrolling past this would leave empty
+    /// rows below the document — `percent()` already hits 100% there, and
+    /// the standard pager contract is to stop at that point rather than
+    /// letting the user drift into blank space.
+    ///
+    /// Before the first draw `last_viewport_h` is 0; fall back to
+    /// `total - 1` so pre-draw clamps (restored saved offset, jump-to-line)
+    /// don't get collapsed to zero.
+    fn max_offset(&self) -> usize {
+        let total = self.total_lines();
+        let body = self.last_viewport_h.saturating_sub(2) as usize;
+        if body == 0 {
+            total.saturating_sub(1)
+        } else {
+            total.saturating_sub(body)
+        }
+    }
+
     fn scroll(&mut self, delta: isize) {
-        let max = self.total_lines().saturating_sub(1);
+        let max = self.max_offset();
         let new = (self.offset as isize + delta).clamp(0, max as isize) as usize;
         if new != self.offset {
             self.offset = new;
@@ -375,7 +393,7 @@ impl App {
             self.layout_name,
             self.wrap_code,
         );
-        self.offset = self.offset.min(self.total_lines().saturating_sub(1));
+        self.offset = self.offset.min(self.max_offset());
     }
 
     fn toggle_wrap_code(&mut self) {
@@ -507,8 +525,7 @@ impl App {
         if vs < self.offset {
             self.offset = vs;
         }
-        let max = self.total_lines().saturating_sub(1);
-        self.offset = self.offset.min(max);
+        self.offset = self.offset.min(self.max_offset());
     }
 
     /// Copy a single source line of a code block to the clipboard.
