@@ -39,6 +39,21 @@ pub fn copy_to_clipboard<W: Write>(out: &mut W, content: &str) -> io::Result<Opt
     Ok(Some(bytes.len()))
 }
 
+/// How a copy was (or wasn't) delivered — callers use this to report
+/// honestly. A native tool sets the OS clipboard deterministically; OSC 52
+/// is fire-and-forget and silently ignored by some terminals (notably
+/// VTE-based ones), so its status must not claim certain success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyOutcome {
+    /// A native clipboard tool accepted the bytes — the clipboard is set.
+    Native(usize),
+    /// The OSC 52 sequence was emitted; whether it lands depends on the
+    /// terminal emulator.
+    Osc52(usize),
+    /// Content exceeded the safety cap; nothing was sent.
+    TooLarge,
+}
+
 /// Convenience wrapper: copy to the system clipboard, using whichever
 /// transport is most likely to succeed. When running locally and a native
 /// clipboard tool is available (`pbcopy`, `wl-copy`, `xclip`, `xsel`), use
@@ -46,15 +61,18 @@ pub fn copy_to_clipboard<W: Write>(out: &mut W, content: &str) -> io::Result<Opt
 /// Otherwise (remote session, or no native tool found) fall back to OSC 52,
 /// which the terminal may or may not honor. Uses a write-then-flush lock so
 /// the escape sequence can't interleave with other terminal output.
-pub fn copy(content: &str) -> io::Result<Option<usize>> {
+pub fn copy(content: &str) -> io::Result<CopyOutcome> {
     if !is_ssh_session() {
         if let Some(n) = try_native_copy(content) {
-            return Ok(Some(n));
+            return Ok(CopyOutcome::Native(n));
         }
     }
     let stdout = io::stdout();
     let mut handle = stdout.lock();
-    copy_to_clipboard(&mut handle, content)
+    match copy_to_clipboard(&mut handle, content)? {
+        Some(n) => Ok(CopyOutcome::Osc52(n)),
+        None => Ok(CopyOutcome::TooLarge),
+    }
 }
 
 /// Try each locally available clipboard command in turn; return the first

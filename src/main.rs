@@ -53,9 +53,22 @@ fn real_main() -> Result<()> {
         return Ok(());
     }
 
-    // clap guaranteed `path` is Some via `required_unless_present_any`.
-    let path = cli.path.as_deref().expect("path is required");
-    let (path, source) = load_input(path)?;
+    // clap guaranteed at least one path via `required_unless_present_any`.
+    let mut docs: Vec<app::DocInput> = Vec::with_capacity(cli.paths.len());
+    for p in &cli.paths {
+        let (path, source) = load_input(p)?;
+        let display_name = app::display_name_for(&path);
+        docs.push(app::DocInput {
+            path,
+            source,
+            display_name,
+            offset: 0,
+        });
+    }
+    let (path, source, display_name) = {
+        let d = &docs[0];
+        (d.path.clone(), d.source.clone(), d.display_name.clone())
+    };
 
     if !io::stdout().is_terminal() {
         anyhow::bail!("stdout is not a terminal; glum requires a TTY to render");
@@ -70,26 +83,21 @@ fn real_main() -> Result<()> {
         })
     };
 
-    let display_name = app::display_name_for(&path);
-
     // Explicit --theme wins. Otherwise fall back to the remembered theme,
     // then to a first-run default picked from the terminal's advertised
     // background ($COLORFGBG) so light terminals don't open with dark glum.
     let theme = cli
         .theme
-        .map(ThemeName::from)
         .or_else(|| store.theme().and_then(ThemeName::from_label))
         .unwrap_or_else(adaptive_first_run_theme);
 
     let layout = cli
         .layout
-        .map(LayoutName::from)
         .or_else(|| store.layout().and_then(LayoutName::from_label))
         .unwrap_or(LayoutName::Minimal);
 
     let align = cli
         .align
-        .map(Align::from)
         .or_else(|| store.align().and_then(Align::from_label))
         .unwrap_or(Align::Center);
 
@@ -99,6 +107,18 @@ fn real_main() -> Result<()> {
         false
     } else {
         store.wrap_code().unwrap_or(true)
+    };
+
+    // Image preview needs a terminal-graphics handshake, which must happen
+    // before raw mode / the alternate screen. Query failure falls back to
+    // half-block rendering, which works everywhere.
+    let picker = if cli.images {
+        Some(
+            ratatui_image::picker::Picker::from_query_stdio()
+                .unwrap_or_else(|_| ratatui_image::picker::Picker::from_fontsize((8, 16))),
+        )
+    } else {
+        None
     };
 
     // --follow only makes sense for a real file on disk. For stdin input
@@ -118,6 +138,9 @@ fn real_main() -> Result<()> {
     let cfg = app::AppConfig {
         path,
         source,
+        docs,
+        current: 0,
+        follow: cli.follow,
         measure: cli.measure,
         theme,
         layout,
@@ -133,16 +156,25 @@ fn real_main() -> Result<()> {
         },
         watcher,
         mouse: cli.mouse,
+        picker,
     };
 
     app::run(cfg)
 }
 
-/// First-run theme pick: inspect `$COLORFGBG` (set by most modern terminal
-/// emulators as `fg;bg` or `fg;…;bg`) so a light-background terminal opens
-/// glum with the `light` theme instead of the historical `dark` default.
-/// Unknown or missing values fall back to `dark`.
+/// First-run theme pick. Ask the terminal for its actual background color
+/// via OSC 11 (`terminal-colorsaurus` handles the query, tmux passthrough,
+/// and timeouts) — must run before raw mode / alternate screen. Falls back
+/// to `$COLORFGBG`, then `dark`.
 fn adaptive_first_run_theme() -> ThemeName {
+    if let Ok(mode) =
+        terminal_colorsaurus::theme_mode(terminal_colorsaurus::QueryOptions::default())
+    {
+        return match mode {
+            terminal_colorsaurus::ThemeMode::Light => ThemeName::Light,
+            terminal_colorsaurus::ThemeMode::Dark => ThemeName::Dark,
+        };
+    }
     if let Ok(val) = std::env::var("COLORFGBG") {
         // Last token is the background ANSI index; terminals use 7 or 15 for
         // light backgrounds.

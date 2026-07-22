@@ -18,7 +18,8 @@ use crate::theme::Theme;
 use crate::typography::smarten;
 
 /// A single rendered document, consisting of styled lines plus a table of
-/// contents and a list of code blocks (for clipboard copy).
+/// contents, code blocks (for clipboard copy), links and images (for the
+/// open/preview modes).
 pub struct Rendered {
     /// Pre-styled, pre-wrapped visual rows. Index these directly by
     /// viewport offset.
@@ -33,6 +34,32 @@ pub struct Rendered {
     /// rows are bounded by the reading measure; tables may exceed it, so
     /// the display can grow its drawing rect to this width before clipping.
     pub max_width: usize,
+    /// Links in document order, for the `o` link-open mode.
+    pub links: Vec<LinkEntry>,
+    /// Image references in document order, for the `i` preview.
+    pub images: Vec<ImageEntry>,
+}
+
+/// A link in document order: the visual line its text starts on (best
+/// effort — the first wrapped line of its paragraph containing the link
+/// text), the display text, and the destination.
+#[derive(Debug, Clone)]
+pub struct LinkEntry {
+    /// Index into [`Rendered::lines`] where the link text starts.
+    pub line: usize,
+    /// The display text of the link.
+    pub text: String,
+    /// The raw destination (URL, `#anchor`, or relative path).
+    pub url: String,
+}
+
+/// An image reference: the visual line of its placeholder and the source URL.
+#[derive(Debug, Clone)]
+pub struct ImageEntry {
+    /// Index into [`Rendered::lines`] of the image placeholder.
+    pub line: usize,
+    /// The raw image source (URL or relative path).
+    pub url: String,
 }
 
 /// A recorded fenced code block: its visual line range in `Rendered::lines`
@@ -158,6 +185,14 @@ struct Renderer {
     pending_list_marker: Option<String>,
     /// Active link URL and the `runs` index where the link text began.
     in_link: Option<(usize, String)>,
+    /// URL of the image currently being rendered, shown after the alt text.
+    image_url: Option<String>,
+    /// Links/images seen in the current paragraph, resolved to visual lines
+    /// when the paragraph flushes.
+    pending_links: Vec<(String, String)>,
+    pending_images: Vec<String>,
+    links: Vec<LinkEntry>,
+    images: Vec<ImageEntry>,
 
     // Tables
     in_table_head: bool,
@@ -197,6 +232,11 @@ impl Renderer {
             list_stack: Vec::new(),
             pending_list_marker: None,
             in_link: None,
+            image_url: None,
+            pending_links: Vec::new(),
+            pending_images: Vec::new(),
+            links: Vec::new(),
+            images: Vec::new(),
             in_table_head: false,
             in_table_cell: false,
             table_cell_buf: Vec::new(),
@@ -252,16 +292,31 @@ impl Renderer {
         self.out.push(Line::styled("", self.theme.base_style()));
     }
 
+    /// Between-paragraph spacing that keeps the `│` gutter continuous inside
+    /// a blockquote instead of visually splitting one quote into several.
+    fn para_break(&mut self) {
+        if self.blockquote_depth > 0 {
+            let gutter = self.block_gutter();
+            self.out
+                .push(Line::styled(gutter, self.theme.quote_style()));
+        } else {
+            self.blank();
+        }
+    }
+
     fn handle(&mut self, event: Event<'_>) {
         match event {
             Event::Start(tag) => self.start_tag(tag),
             Event::End(tag) => self.end_tag(tag),
             Event::Text(t) => self.push_text(&t),
             Event::Code(t) => {
-                let styled = format!("\u{00A0}{t}\u{00A0}");
+                // Plain-space padding (not NBSP): terminal drag-select copies
+                // the padding too, and invisible U+00A0 breaks pasted shell
+                // commands. The code background still delimits the run.
+                let styled = format!(" {t} ");
                 self.push_run(Run {
                     text: styled,
-                    style: self.theme.code_style(),
+                    style: self.theme.inline_code_style(),
                 });
             }
             Event::SoftBreak => self.push_text(" "),
@@ -274,7 +329,8 @@ impl Renderer {
                     return;
                 }
                 self.blank();
-                let rule: String = "\u{2500}".repeat(self.measure.min(64));
+                // Full measure, matching heading and code-block rules.
+                let rule: String = "\u{2500}".repeat(self.measure);
                 self.out.push(Line::styled(rule, self.theme.rule_style()));
                 self.blank();
             }
@@ -304,14 +360,7 @@ impl Renderer {
         match tag {
             Tag::Paragraph => {}
             Tag::Heading { level, .. } => {
-                let n: u8 = match level {
-                    HeadingLevel::H1 => 1,
-                    HeadingLevel::H2 => 2,
-                    HeadingLevel::H3 => 3,
-                    HeadingLevel::H4 => 4,
-                    HeadingLevel::H5 => 5,
-                    HeadingLevel::H6 => 6,
-                };
+                let n = heading_level_u8(level);
                 self.in_heading = Some(n);
                 self.heading_text.clear();
                 let hs = self.theme.heading_style(n);
@@ -319,6 +368,9 @@ impl Renderer {
             }
             Tag::BlockQuote(_) => {
                 self.blockquote_depth += 1;
+                // Style the quoted text itself, not just the `│` gutter.
+                let qs = self.theme.quote_style();
+                self.push_style(|_| qs);
             }
             Tag::CodeBlock(kind) => {
                 self.in_code_block = true;
@@ -372,7 +424,8 @@ impl Renderer {
                 let ls = self.theme.link_style();
                 self.push_style(|_| ls);
             }
-            Tag::Image { .. } => {
+            Tag::Image { dest_url, .. } => {
+                self.image_url = Some(dest_url.to_string());
                 self.push_run(Run {
                     text: "[image: ".to_string(),
                     style: self.theme.dim_style(),
@@ -392,7 +445,14 @@ impl Renderer {
                 self.in_table_cell = true;
                 self.table_cell_buf.clear();
             }
-            Tag::FootnoteDefinition(_) => {}
+            Tag::FootnoteDefinition(label) => {
+                // Label the definition so the reader can pair it with its
+                // `[label]` reference; the body follows as a paragraph.
+                self.push_run(Run {
+                    text: format!("[{label}]: "),
+                    style: self.theme.accent_style(),
+                });
+            }
             _ => {}
         }
     }
@@ -406,18 +466,11 @@ impl Renderer {
                 self.flush_paragraph();
                 // Vertical rhythm: one blank between paragraphs (but not inside list items with tight layout).
                 if self.list_stack.is_empty() {
-                    self.blank();
+                    self.para_break();
                 }
             }
             TagEnd::Heading(level) => {
-                let n: u8 = match level {
-                    HeadingLevel::H1 => 1,
-                    HeadingLevel::H2 => 2,
-                    HeadingLevel::H3 => 3,
-                    HeadingLevel::H4 => 4,
-                    HeadingLevel::H5 => 5,
-                    HeadingLevel::H6 => 6,
-                };
+                let n = heading_level_u8(level);
                 self.pop_style();
                 let start_line = self.out.len();
                 let heading = std::mem::take(&mut self.heading_text);
@@ -436,6 +489,20 @@ impl Renderer {
             }
             TagEnd::BlockQuote(_) => {
                 self.blockquote_depth = self.blockquote_depth.saturating_sub(1);
+                self.pop_style();
+                // `para_break` leaves a trailing gutter-only line after the
+                // quote's last paragraph; once the quote closes, turn it back
+                // into a plain blank so the bar doesn't overhang the quote.
+                if self.blockquote_depth == 0 {
+                    let gutter_only = self.out.last().is_some_and(|l| {
+                        let s = l.to_string();
+                        !s.is_empty() && s.chars().all(|c| c == '\u{2502}' || c == ' ')
+                    });
+                    if gutter_only {
+                        self.out.pop();
+                        self.blank();
+                    }
+                }
             }
             TagEnd::CodeBlock => {
                 self.flush_code_block();
@@ -468,6 +535,13 @@ impl Renderer {
                     // which add no information beyond the link text.
                     let worth_showing =
                         is_inline_worthy_url(&url) && link_text.trim() != url.trim();
+                    // Record for the link-open mode (`o`). Table cells and
+                    // headings flatten their text, so line resolution only
+                    // works for paragraph-context links.
+                    if !self.in_table_cell && self.in_heading.is_none() && !url.trim().is_empty() {
+                        self.pending_links
+                            .push((link_text.trim().to_string(), url.clone()));
+                    }
                     // Inside table cells we skip inline URLs to keep columns
                     // compact; the link text still has the underline style.
                     if worth_showing && !self.in_table_cell {
@@ -487,8 +561,19 @@ impl Renderer {
                 }
             }
             TagEnd::Image => {
+                // Same philosophy as links: the URL is the only way a
+                // terminal reader can actually find the image.
+                let tail = match self.image_url.take() {
+                    Some(url) if !url.trim().is_empty() => {
+                        if !self.in_table_cell && self.in_heading.is_none() {
+                            self.pending_images.push(url.clone());
+                        }
+                        format!(" \u{2014} {url}]")
+                    }
+                    _ => "]".to_string(),
+                };
                 self.push_run(Run {
-                    text: "]".to_string(),
+                    text: tail,
                     style: self.theme.dim_style(),
                 });
             }
@@ -583,6 +668,7 @@ impl Renderer {
         if self.runs.is_empty() && self.pending_list_marker.is_none() {
             return;
         }
+        let first_out = self.out.len();
 
         // Flatten runs into (String, Vec<(range, Style)>).
         let mut combined = String::new();
@@ -624,17 +710,28 @@ impl Renderer {
             None => String::new(),
         };
 
-        let inner = self
+        // Deeply nested quotes can eat the whole measure; shorten the gutter
+        // rather than silently dropping the paragraph text (the runs are
+        // already drained at this point).
+        let mut gutter_str = gutter_str;
+        let mut inner = self
             .inner_width()
             .saturating_sub(gutter_str.chars().count());
         if inner < 4 {
-            return;
+            let keep = self.inner_width().saturating_sub(4);
+            gutter_str = gutter_str.chars().take(keep).collect();
+            inner = self
+                .inner_width()
+                .saturating_sub(gutter_str.chars().count());
         }
 
+        // break_words(true): a token longer than the measure (usually a URL)
+        // hard-breaks instead of overflowing the line, which would desync the
+        // one-line-per-row scroll math downstream.
         let opts = textwrap::Options::new(inner)
             .initial_indent(&first_line_indent)
             .subsequent_indent(&subsequent_indent)
-            .break_words(false);
+            .break_words(true);
         let wrapped = textwrap::wrap(&smart, &opts);
 
         // We wrapped with textwrap; it may have consumed leading spaces we added.
@@ -657,6 +754,35 @@ impl Renderer {
                 &first_indent,
             );
             self.out.push(line);
+        }
+        self.resolve_pending_media(first_out);
+    }
+
+    /// Map links/images collected during this paragraph to visual lines:
+    /// the first output line of the paragraph containing a prefix of the
+    /// link text (or image URL), falling back to the paragraph's first line.
+    fn resolve_pending_media(&mut self, first_out: usize) {
+        if self.pending_links.is_empty() && self.pending_images.is_empty() {
+            return;
+        }
+        let find_line = |out: &[Line<'static>], needle: &str| -> usize {
+            let probe: String = needle.chars().take(12).collect();
+            let probe = probe.trim();
+            if probe.is_empty() {
+                return first_out;
+            }
+            (first_out..out.len())
+                .find(|&i| out[i].to_string().contains(probe))
+                .unwrap_or(first_out)
+        };
+        for (text, url) in std::mem::take(&mut self.pending_links) {
+            let smart_text = smarten(&text);
+            let line = find_line(&self.out, &smart_text);
+            self.links.push(LinkEntry { line, text, url });
+        }
+        for url in std::mem::take(&mut self.pending_images) {
+            let line = find_line(&self.out, &url);
+            self.images.push(ImageEntry { line, url });
         }
     }
 
@@ -1061,6 +1187,8 @@ impl Renderer {
             toc: self.toc,
             code_blocks: self.code_blocks,
             max_width,
+            links: self.links,
+            images: self.images,
         }
     }
 }
@@ -1208,6 +1336,17 @@ fn wrap_code_line(line: &str, first_w: usize, rest_w: usize) -> Vec<String> {
     out
 }
 
+fn heading_level_u8(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
+    }
+}
+
 /// A link URL is "external" if it has a scheme we can plausibly click in a
 /// terminal: http, https, or mailto. In-document anchors (`#section`),
 /// relative paths, and unknown schemes are not shown inline.
@@ -1242,7 +1381,7 @@ fn is_inline_worthy_url(url: &str) -> bool {
     true
 }
 
-fn truncate_to_width(s: &str, max_cols: usize) -> String {
+pub(crate) fn truncate_to_width(s: &str, max_cols: usize) -> String {
     let mut out = String::new();
     let mut width = 0;
     for ch in s.chars() {
@@ -1646,6 +1785,147 @@ mod tests {
         assert!(text.contains("\u{201C}yes\u{201D}"));
         assert!(text.contains("\u{2014}"));
         assert!(text.contains("\u{2026}"));
+    }
+
+    #[test]
+    fn deep_blockquote_keeps_text() {
+        // 9 nesting levels at the minimum measure: the gutter is shortened
+        // rather than the paragraph text being silently dropped.
+        let md = format!("{} hi\n", ">".repeat(9));
+        let r = render(&md, 20, 20, plain(), LayoutName::Minimal, true);
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("hi"), "quoted text was dropped:\n{text}");
+    }
+
+    #[test]
+    fn blockquote_gutter_continues_across_paragraphs() {
+        let md = "> one\n>\n> two\n\nafter\n";
+        let r = render(md, 40, 40, plain(), LayoutName::Minimal, true);
+        let lines: Vec<String> = r.lines.iter().map(ToString::to_string).collect();
+        // The between-paragraph spacer inside the quote keeps the │ bar.
+        let spacer = lines.iter().any(|l| l.trim() == "\u{2502}");
+        assert!(spacer, "expected a gutter-only spacer line:\n{lines:?}");
+        // But the bar must not overhang below the quote: the line before
+        // "after" content is a plain blank.
+        let after_idx = lines.iter().position(|l| l.contains("after")).unwrap();
+        assert_eq!(lines[after_idx - 1].trim(), "");
+    }
+
+    #[test]
+    fn inline_code_has_no_nbsp() {
+        let md = "run `glum` now\n";
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
+        let text: String = r.lines.iter().map(ToString::to_string).collect();
+        assert!(!text.contains('\u{00A0}'), "NBSP leaked into rendering");
+        assert!(text.contains("glum"));
+    }
+
+    #[test]
+    fn horizontal_rule_spans_full_measure() {
+        let r = render(
+            "a\n\n---\n\nb\n",
+            80,
+            80,
+            plain(),
+            LayoutName::Minimal,
+            true,
+        );
+        let rule_w = r
+            .lines
+            .iter()
+            .find(|l| l.to_string().starts_with('\u{2500}'))
+            .expect("rule line")
+            .width();
+        assert_eq!(rule_w, 80);
+    }
+
+    #[test]
+    fn footnote_definitions_are_labeled() {
+        let md = "Text[^1].\n\n[^1]: The note body.\n";
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("[1]: "),
+            "definition should carry its label:\n{text}"
+        );
+    }
+
+    #[test]
+    fn images_show_their_url() {
+        let md = "![logo](https://example.com/logo.png)\n";
+        let r = render(md, 80, 80, plain(), LayoutName::Minimal, true);
+        let text: String = r
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("logo"));
+        assert!(
+            text.contains("https://example.com/logo.png"),
+            "image URL missing:\n{text}"
+        );
+    }
+
+    #[test]
+    fn overlong_tokens_break_instead_of_overflowing() {
+        let long_url = format!("see https://example.com/{} end\n", "x".repeat(120));
+        let r = render(&long_url, 40, 40, plain(), LayoutName::Minimal, true);
+        for line in &r.lines {
+            assert!(
+                line.width() <= 41,
+                "line overflows the measure: {} cols",
+                line.width()
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_code_line_handles_cjk_width() {
+        // Each CJK char is 2 columns; a 5-col budget must not split one in
+        // half or exceed the budget.
+        let chunks = wrap_code_line("\u{4F60}\u{597D}\u{4E16}\u{754C}", 5, 5);
+        for c in &chunks {
+            assert!(unicode_width::UnicodeWidthStr::width(c.as_str()) <= 5);
+            assert!(!c.is_empty());
+        }
+        let joined: String = chunks.concat();
+        assert_eq!(joined, "\u{4F60}\u{597D}\u{4E16}\u{754C}");
+    }
+
+    #[test]
+    fn links_and_images_are_recorded_with_lines() {
+        let md = "Intro text here.\n\nSee [the docs](https://example.com/docs) for more.\n\n![shot](img/shot.png)\n";
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
+        assert_eq!(r.links.len(), 1);
+        assert_eq!(r.links[0].url, "https://example.com/docs");
+        assert!(
+            r.lines[r.links[0].line].to_string().contains("the docs"),
+            "link line should contain the link text"
+        );
+        assert_eq!(r.images.len(), 1);
+        assert_eq!(r.images[0].url, "img/shot.png");
+        assert!(r.lines[r.images[0].line]
+            .to_string()
+            .contains("img/shot.png"));
+    }
+
+    #[test]
+    fn anchor_links_are_recorded_for_jumping() {
+        let md = "# Intro\n\nJump to [usage](#usage).\n\n# Usage\n\ntext\n";
+        let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
+        assert_eq!(r.links.len(), 1);
+        assert_eq!(r.links[0].url, "#usage");
     }
 
     #[test]

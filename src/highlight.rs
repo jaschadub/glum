@@ -37,8 +37,8 @@ struct Grammar {
     line_comments: &'static [&'static str],
     /// String delimiters; both ends are the same character.
     strings: &'static [char],
-    /// Whether `#` starts a line comment (shell/python/yaml/toml style).
-    /// This is covered by `line_comments` but flagged explicitly for fn-call heuristic.
+    /// Whether keyword/type lookup is case-sensitive (false for languages
+    /// like HTML where `DIV` and `div` are the same tag).
     case_sensitive: bool,
     /// Permit a function-call highlight: `identifier(` → identifier colored as fn.
     fn_call_highlight: bool,
@@ -667,16 +667,17 @@ fn is_ident_continue(c: char) -> bool {
 }
 
 fn classify_word(word: &str, g: &'static Grammar, theme: Theme) -> Style {
-    let cmp: Box<dyn Fn(&&&str) -> bool> = if g.case_sensitive {
-        Box::new(|k: &&&str| **k == word)
-    } else {
-        let lw = word.to_ascii_lowercase();
-        Box::new(move |k: &&&str| k.eq_ignore_ascii_case(&lw))
+    let matches = |k: &&str| {
+        if g.case_sensitive {
+            *k == word
+        } else {
+            k.eq_ignore_ascii_case(word)
+        }
     };
-    if g.keywords.iter().any(|k| cmp(&k)) {
+    if g.keywords.iter().any(matches) {
         return theme.keyword_style();
     }
-    if g.types.iter().any(|k| cmp(&k)) {
+    if g.types.iter().any(matches) {
         return theme.type_style();
     }
     theme.code_style()

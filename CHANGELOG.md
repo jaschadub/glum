@@ -4,6 +4,123 @@ All notable changes to glum are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-07-22
+
+### Added
+
+- **Two vibrant themes**: `meadow` (light) and `aurora` (dark) join the
+  cycle — seven themes total.
+- **Wide tables escape the measure**: a table that cannot fit the prose
+  column may use the full terminal width before cells start wrapping.
+
+- **Link opening** (`o`): pick any link with j/k (its line highlights,
+  the footer shows the destination) and Enter opens it — http(s)/mailto
+  via the OS opener, `#anchors` jump to their heading in-document,
+  relative file paths open with the default app. Non-navigable schemes
+  (`javascript:`, `data:`, …) are refused.
+- **Image preview** (`i`, opt-in via `--images`): local images render
+  full-screen using the terminal's best graphics protocol (kitty /
+  sixel / iTerm2), with a half-block fallback everywhere else.
+- **Tabs**: `glum a.md b.md c.md` opens every file; `]` / `[` switch
+  documents, a tab bar appears across the top, and each file keeps its
+  own remembered reading position. `--follow` re-points the watcher at
+  the visible file.
+- **Scrollbar** with search-match tick marks: a dim track on the right
+  edge shows where you are, and every search match is marked on it in
+  accent — the `5/12` counter now has a spatial meaning. The raw code
+  view gets vertical and horizontal scrollbars on its frame.
+- **Reading-progress gauge**: the footer's bare percentage is now a
+  subtle line gauge with the percent as its label.
+- **Search prompt editing**: Left/Right/Home/End move a real caret;
+  Ctrl-A/E jump, Ctrl-W deletes the previous word, Ctrl-U clears to the
+  start, Delete works, and pastes insert at the caret.
+- **True background detection**: the first-run theme now asks the
+  terminal for its actual background color via OSC 11
+  (`terminal-colorsaurus`), falling back to `$COLORFGBG`, then `dark`.
+
+### Fixed
+
+- `--follow` no longer crashes when a reload removes or shrinks the code
+  block open in the line-pick or raw-code view — stale block indices now
+  drop back to reading mode.
+- Terminals narrower than the measure: the document re-renders at the
+  effective width instead of letting the widget re-wrap lines, so paging,
+  the percent indicator, and search highlighting stay correct in narrow
+  panes. Resizing now actually re-flows the text.
+- Search matches text altered by smart typography: queries like `don't`,
+  `--follow`, or `...` now match their curly/em-dash/ellipsis renderings
+  (both sides are normalized before comparison).
+- Pasting into the search prompt works (bracketed paste events were
+  silently discarded).
+- Cancelling a search (`Esc`) restores the scroll position from before the
+  live preview moved it; a committed search jumps to the first match at or
+  after the reading position (like `less`), not the top of the document.
+- A panic while `--mouse` is active no longer leaves the terminal spewing
+  mouse escape sequences.
+- Squeezing the terminal very small with the raw-code or search overlay
+  open no longer panics.
+- Deeply nested blockquotes at narrow measures shorten the gutter instead
+  of silently dropping the quoted text.
+- Very long tokens (URLs) hard-break at the measure instead of overflowing
+  and desyncing scroll math.
+- Reading position is autosaved every couple of seconds, so a crash or
+  SIGKILL no longer loses it.
+- Footer filename shortening is display-width aware (CJK names no longer
+  overflow the footer).
+- Help overlay no longer clips its last line; on short terminals it
+  truncates with an indicator instead of clipping silently.
+
+### Changed
+
+- Copy status is honest about its transport: only native-tool copies
+  (`pbcopy`/`wl-copy`/`xclip`/`xsel`) claim success; the OSC 52 fallback
+  reports "sent via OSC 52 — if paste fails, install xclip", since some
+  terminals (VTE-based ones in particular) silently ignore the sequence.
+- `Esc` in reading mode clears the active search (or does nothing) instead
+  of quitting; `q` and `Ctrl-C` quit. Overlays still close on `Esc`.
+- Ctrl-chords are real bindings now: `Ctrl-f`/`Ctrl-b` page, `Ctrl-d`/
+  `Ctrl-u` half-page, `Ctrl-e`/`Ctrl-y` scroll one line. Ctrl/Alt chords no
+  longer accidentally trigger plain-key actions (Ctrl-E used to open
+  `$EDITOR`).
+- `G` / `End` jumps to the last page, not a nearly blank screen with the
+  last line at the top; scrolling clamps the same way.
+- All search matches on screen are now marked (underlined accent), with the
+  current match reversed — and only the matched substring, not the whole
+  line. `n`/`N` announce when the search wraps around.
+- Copy/reload confirmations are no longer hidden by the match counter while
+  a search is active.
+- The `sepia` theme is now the conventional light cream e-reader palette
+  (it was previously a dark brown theme).
+- Inline code renders bold in the `plain` theme so it is distinguishable
+  without colors; inline-code padding uses plain spaces instead of
+  no-break spaces, so mouse-selected text pastes cleanly into a shell.
+- Minimal layout gains a quiet heading hierarchy: H2 is underlined, H3
+  bold, H4+ dim — H2 was previously indistinguishable from bold body text.
+- Blockquotes: the quoted text itself is styled (not just the `│` bar), and
+  the bar continues across blank lines between paragraphs of one quote.
+- Footnote definitions are labeled (`[1]: …`); images show their URL
+  (`[image: alt — url]`).
+- Horizontal rules span the full measure, matching heading and code rules.
+- TOC overlay supports paging (`d`/`u`/`PgUp`/`PgDn`/`space`/`b`) and
+  type-to-filter: `/` starts a live case-insensitive title filter
+  (arrows/Tab move, Enter jumps, Esc returns to the full tree). The mouse
+  wheel moves the selection instead of scrolling the hidden document.
+- `R` opened from the line picker returns to the picker on `Esc`, not to
+  reading mode.
+- Overlays (TOC, Search, Help, Raw code) now use rounded borders — a
+  softer frame that matches glum's reader-first tone.
+- TOC is rendered as a tree with `│ ├ └` connectors instead of plain
+  indentation, so deep documents stay scannable.
+- Vivid layout uses a heavy top rule (`━`) on code blocks to echo the
+  heading hierarchy; minimal keeps the lighter `─`.
+- Unordered list bullets graduate by depth in vivid layout
+  (`• → ◦ → ▫`); minimal stays with a single `•` for quieter pages.
+- First-run theme is now picked from the terminal's advertised
+  background (`$COLORFGBG`) — light terminals open with `light`
+  instead of `dark`. `--theme` and the remembered theme still win.
+
+[0.3.0]: https://github.com/jaschadub/glum/releases/tag/v0.3.0
+
 ## [0.2.2] — 2026-04-20
 
 ### Added

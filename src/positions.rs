@@ -19,12 +19,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const STATE_FILE: &str = "positions.json";
-const VERSION: u32 = 1;
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 struct Store {
-    #[serde(default)]
-    version: u32,
     #[serde(default)]
     positions: BTreeMap<String, Entry>,
     /// Last theme the user was reading with. None = never set.
@@ -206,7 +203,6 @@ impl PositionStore {
         if !self.enabled {
             return Ok(());
         }
-        self.inner.version = VERSION;
         let data = serde_json::to_vec_pretty(&self.inner)?;
         let Some(dir) = self.path.parent() else {
             anyhow::bail!("position store path has no parent");

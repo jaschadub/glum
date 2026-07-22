@@ -1,15 +1,16 @@
 //! Command-line argument definitions for the `glum` binary.
 //!
-//! Parsed with [`clap`]. The binary reads [`Cli`] with `Cli::parse()` and
-//! converts the value-enum wrappers ([`AlignArg`], [`LayoutArg`],
-//! [`ThemeArg`]) into the library's own enums via `From` impls before
-//! constructing an [`crate::app::AppConfig`].
+//! Parsed with [`clap`]. The theme / layout / align flags use the library's
+//! own enums directly ([`ThemeName`], [`LayoutName`], [`Align`]) via
+//! `clap::ValueEnum`, so the CLI, completions, and runtime cycling can
+//! never drift apart.
 
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use clap_complete::Shell;
 
+use crate::app::Align;
 use crate::layout::LayoutName;
 use crate::theme::ThemeName;
 
@@ -17,11 +18,12 @@ use crate::theme::ThemeName;
 #[derive(Debug, Parser)]
 #[command(name = "glum", version, about, long_about = None)]
 pub struct Cli {
-    /// Path to a markdown file. Pass `-` to read from stdin. Not required
-    /// when `--generate-completions` or `--generate-man` is used, because
-    /// those print to stdout and exit.
-    #[arg(required_unless_present_any(["generate_completions", "generate_man"]))]
-    pub path: Option<PathBuf>,
+    /// Markdown file(s) to read. Multiple files open in tabs — switch with
+    /// `]` / `[`. Pass `-` to read from stdin. Not required when
+    /// `--generate-completions` or `--generate-man` is used, because those
+    /// print to stdout and exit.
+    #[arg(num_args = 0.., required_unless_present_any(["generate_completions", "generate_man"]))]
+    pub paths: Vec<PathBuf>,
 
     /// Target column width for the reading measure.
     #[arg(long, default_value_t = 72, value_parser = parse_measure)]
@@ -30,19 +32,19 @@ pub struct Cli {
     /// Color theme. Press `T` at runtime to cycle themes. If omitted, the
     /// last theme you used is restored (first-run default is `dark`).
     #[arg(long, value_enum)]
-    pub theme: Option<ThemeArg>,
+    pub theme: Option<ThemeName>,
 
     /// Typographic layout. Press `L` at runtime to toggle. If omitted, the
     /// last layout you used is restored (first-run default is `minimal`).
     #[arg(long, value_enum)]
-    pub layout: Option<LayoutArg>,
+    pub layout: Option<LayoutName>,
 
     /// Horizontal alignment of the reading column. `center` leaves symmetric
     /// margins for classic reader-mode feel; `left` anchors the column to the
     /// left edge so code blocks don't appear indented in wide terminals.
     /// Press `A` at runtime to toggle.
     #[arg(long, value_enum)]
-    pub align: Option<AlignArg>,
+    pub align: Option<Align>,
 
     /// Open with a search pre-populated; jump to the first match. `n`/`N` to
     /// step through as usual.
@@ -86,6 +88,12 @@ pub struct Cli {
     #[arg(long)]
     pub mouse: bool,
 
+    /// Enable inline image preview (`i` key) for local images, using the
+    /// terminal's best graphics protocol (kitty / sixel / iTerm2, with a
+    /// half-block fallback).
+    #[arg(long)]
+    pub images: bool,
+
     /// Emit a shell completion script for the given shell on stdout, then
     /// exit. Redirect into the shell's completion directory — examples:
     /// `glum --generate-completions bash > ~/.local/share/bash-completion/completions/glum`,
@@ -98,75 +106,6 @@ pub struct Cli {
     /// Typical use: `glum --generate-man > /usr/local/share/man/man1/glum.1`.
     #[arg(long = "generate-man")]
     pub generate_man: bool,
-}
-
-/// CLI wrapper for [`crate::app::Align`] so it can be used as a
-/// [`clap::ValueEnum`] without leaking the library type into clap's
-/// derive macro.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum AlignArg {
-    /// Center the reading column — symmetric margins, classic reader-mode.
-    Center,
-    /// Anchor the reading column to the left edge (2-col gutter).
-    Left,
-    /// Anchors the reading column to the right margin. Useful as a column
-    /// placement hint for RTL scripts; note that glum does not perform
-    /// bidirectional layout — individual RTL glyphs still render in terminal
-    /// order unless your terminal itself applies `BiDi`.
-    Right,
-}
-
-/// CLI wrapper for [`crate::layout::LayoutName`] (see that type for the
-/// semantics of each preset).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum LayoutArg {
-    /// Understated typography.
-    Minimal,
-    /// Strong heading hierarchy with prefixes and heavy rules.
-    Vivid,
-}
-
-impl From<LayoutArg> for LayoutName {
-    fn from(value: LayoutArg) -> Self {
-        match value {
-            LayoutArg::Minimal => Self::Minimal,
-            LayoutArg::Vivid => Self::Vivid,
-        }
-    }
-}
-
-/// CLI wrapper for [`crate::theme::ThemeName`] (see that type for the
-/// semantics of each theme).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ThemeArg {
-    /// Off-white paper background.
-    Light,
-    /// Near-black background.
-    Dark,
-    /// Warm brown paper tones.
-    Sepia,
-    /// Deep blue-leaning dark theme.
-    Night,
-    /// Vibrant light — cream paper, emerald headings, coral accent.
-    Meadow,
-    /// Vibrant dark — midnight indigo, mint headings, rose/lavender accents.
-    Aurora,
-    /// ANSI-16 fallback.
-    Plain,
-}
-
-impl From<ThemeArg> for ThemeName {
-    fn from(value: ThemeArg) -> Self {
-        match value {
-            ThemeArg::Light => Self::Light,
-            ThemeArg::Dark => Self::Dark,
-            ThemeArg::Sepia => Self::Sepia,
-            ThemeArg::Night => Self::Night,
-            ThemeArg::Meadow => Self::Meadow,
-            ThemeArg::Aurora => Self::Aurora,
-            ThemeArg::Plain => Self::Plain,
-        }
-    }
 }
 
 fn parse_measure(s: &str) -> Result<u16, String> {

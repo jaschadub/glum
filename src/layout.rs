@@ -16,7 +16,7 @@ use ratatui::style::{Modifier, Style};
 use crate::theme::Theme;
 
 /// Name of a typographic layout preset. Toggle at runtime with `L`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum LayoutName {
     /// Understated typography: quiet hierarchy, single thin rule under H1.
     Minimal,
@@ -99,8 +99,15 @@ fn decor_minimal(level: u8, theme: Theme) -> HeadingDecor {
     if let Some(bg) = theme.bg {
         style = style.bg(bg);
     }
-    if level >= 3 {
-        style = style.add_modifier(Modifier::DIM);
+    // Quiet but scannable hierarchy: H1 bold + rule, H2 bold + underline,
+    // H3 bold, H4+ bold + dim (+ italic at H5/H6). Without the underline
+    // step, H2 was indistinguishable from bold body text.
+    match level {
+        2 => style = style.add_modifier(Modifier::UNDERLINED),
+        3 => {}
+        4 => style = style.add_modifier(Modifier::DIM),
+        l if l >= 5 => style = style.add_modifier(Modifier::DIM | Modifier::ITALIC),
+        _ => {}
     }
     HeadingDecor {
         blank_before: 0,

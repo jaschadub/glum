@@ -13,7 +13,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 /// Name of a built-in color theme. Labels round-trip via [`ThemeName::label`]
 /// and [`ThemeName::from_label`] for persistence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum ThemeName {
     /// Off-white paper background, dark text. Suited to bright terminals.
     Light,
@@ -137,7 +137,9 @@ impl Theme {
                 rule: Color::Rgb(196, 192, 180),
                 syn_keyword: Color::Rgb(150, 48, 120),
                 syn_string: Color::Rgb(96, 112, 40),
-                syn_comment: Color::Rgb(150, 150, 156),
+                // Dark enough to stay readable as italic text on the code
+                // background (the old 150,150,156 was ~2.4:1 contrast).
+                syn_comment: Color::Rgb(112, 114, 122),
                 syn_number: Color::Rgb(160, 84, 24),
                 syn_type: Color::Rgb(60, 92, 140),
                 syn_fn: Color::Rgb(44, 92, 140),
@@ -160,23 +162,26 @@ impl Theme {
                 syn_type: Color::Rgb(140, 196, 232),
                 syn_fn: Color::Rgb(152, 176, 232),
             },
+            // Sepia is the e-reader look: warm cream paper, dark warm ink.
+            // (It was previously a dark brown theme, which surprised anyone
+            // expecting the near-universal light sepia convention.)
             ThemeName::Sepia => Self {
-                bg: Some(Color::Rgb(44, 36, 22)),
-                fg: Color::Rgb(230, 214, 184),
-                dim: Color::Rgb(160, 144, 116),
-                accent: Color::Rgb(198, 146, 94),
-                heading: Color::Rgb(244, 224, 184),
-                code_fg: Color::Rgb(210, 192, 160),
-                code_bg: Some(Color::Rgb(54, 44, 30)),
-                quote: Color::Rgb(176, 156, 120),
-                link: Color::Rgb(186, 164, 120),
-                rule: Color::Rgb(112, 96, 72),
-                syn_keyword: Color::Rgb(214, 144, 100),
-                syn_string: Color::Rgb(196, 176, 112),
-                syn_comment: Color::Rgb(140, 124, 100),
-                syn_number: Color::Rgb(220, 168, 120),
-                syn_type: Color::Rgb(180, 152, 96),
-                syn_fn: Color::Rgb(216, 184, 116),
+                bg: Some(Color::Rgb(247, 240, 224)),
+                fg: Color::Rgb(66, 52, 36),
+                dim: Color::Rgb(150, 132, 104),
+                accent: Color::Rgb(150, 96, 42),
+                heading: Color::Rgb(48, 36, 24),
+                code_fg: Color::Rgb(88, 70, 48),
+                code_bg: Some(Color::Rgb(236, 226, 204)),
+                quote: Color::Rgb(122, 102, 76),
+                link: Color::Rgb(126, 88, 40),
+                rule: Color::Rgb(202, 188, 160),
+                syn_keyword: Color::Rgb(148, 62, 112),
+                syn_string: Color::Rgb(100, 108, 40),
+                syn_comment: Color::Rgb(158, 142, 116),
+                syn_number: Color::Rgb(164, 90, 30),
+                syn_type: Color::Rgb(78, 98, 140),
+                syn_fn: Color::Rgb(64, 98, 140),
             },
             ThemeName::Night => Self {
                 bg: Some(Color::Rgb(16, 18, 24)),
@@ -326,6 +331,18 @@ impl Theme {
             s = s.bg(bg);
         }
         s
+    }
+
+    /// Style for inline `code` spans. When the theme has no code background
+    /// (plain / `NO_COLOR` contexts), fall back to bold so inline code is still
+    /// distinguishable from body text at all.
+    pub fn inline_code_style(self) -> Style {
+        let s = self.code_style();
+        if self.code_bg.is_none() {
+            s.add_modifier(Modifier::BOLD)
+        } else {
+            s
+        }
     }
 
     /// Muted style for URLs, continuation markers, and footer hints.

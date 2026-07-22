@@ -95,8 +95,22 @@ cosign verify-blob \
 - **Links** render inline URLs for external and relative paths; anchor
   links stay clean.
 - **Search** (`/`) with live match count and `n` / `N` / Tab stepping.
-- **TOC** (`t`) overlay; jump to first match of a heading title with
-  `-H`.
+  Matches are typography-aware (`don't` finds `don’t`, `--` finds `—`),
+  continue from the reading position like `less`, highlight every match
+  on screen, and the prompt accepts pastes. `Esc` cancels back to where
+  you were.
+- **TOC** (`t`) overlay with type-to-filter (`/`, then Enter to jump);
+  jump to first match of a heading title with `-H`.
+- **Links open** (`o`) — pick a link with j/k and Enter opens it:
+  external URLs via the OS opener, `#anchors` jump in-document,
+  relative paths open with the default app.
+- **Image preview** (`i`, with `--images`) — local images render
+  full-screen via kitty / sixel / iTerm2 graphics, falling back to
+  half-blocks anywhere else.
+- **Tabs** — open several files at once; `]` / `[` switch, each file
+  keeps its own reading position.
+- **Orientation** — a dim scrollbar with search-match tick marks, and a
+  reading-progress gauge in the footer.
 - **Editor handoff** — `e` opens `$EDITOR` / `$VISUAL` at the nearest
   heading's source line, then reloads.
 - **Follow mode** (`-f`) re-renders on file change; `r` reloads manually.
@@ -111,7 +125,7 @@ cosign verify-blob \
 ## Usage
 
 ```
-glum [OPTIONS] <PATH>
+glum [OPTIONS] <PATH>...
 
   --measure <N>             column width (20..200, default 72)
   --theme <NAME>            light, dark, sepia, night, meadow, aurora, plain
@@ -124,6 +138,7 @@ glum [OPTIONS] <PATH>
       --truncate-code       truncate long code lines with `…` instead of soft-wrapping
       --no-remember         don't persist reading position / preferences across runs
       --mouse               enable mouse-wheel scrolling (disables native text selection)
+      --images              enable `i` image preview (kitty / sixel / iTerm2 / half-block)
   -f, --follow              re-render when the file changes on disk
   --generate-completions <SHELL>  emit a shell completion script to stdout (bash/zsh/fish/elvish/powershell)
   --generate-man                  emit a roff man page to stdout
@@ -151,6 +166,8 @@ glum --generate-completions fish > ~/.config/fish/completions/glum.fish
 glum --generate-man              > ~/.local/share/man/man1/glum.1
 ```
 
+Multiple files open in tabs — switch with `]` / `[`.
+
 If `--theme`, `--layout`, or `--align` is omitted, the last value you used is
 restored. First-run defaults: `minimal` / `center`, plus `light` or
 `dark` based on the terminal's advertised background (via `$COLORFGBG`,
@@ -177,17 +194,22 @@ cat post.md | glum -                        # read from stdin
 |-----------------------|-----------------------------------------------|
 | j / ↓                 | scroll down                                   |
 | k / ↑                 | scroll up                                     |
-| space / PgDn          | page down                                     |
-| b / PgUp              | page up                                       |
-| d / u                 | half page down / up                           |
-| g / G                 | top / bottom                                  |
-| t                     | table of contents                             |
+| space / PgDn / Ctrl-f | page down                                     |
+| b / PgUp / Ctrl-b     | page up                                       |
+| d / u (or Ctrl-d/u)   | half page down / up                           |
+| Ctrl-e / Ctrl-y       | scroll one line down / up                     |
+| g / Home              | top                                           |
+| G / End               | bottom (last full page)                       |
+| t                     | table of contents (j/k move, d/u page, / filter) |
 | /                     | open search                                   |
 | n / N / Tab / → / ←   | next / previous search match                  |
-| c                     | clear active search                           |
+| c / Esc               | clear active search                           |
 | y                     | copy the in-view code block to clipboard      |
 | Y                     | pick a single code line to copy (j/k, Enter)  |
 | R                     | raw code view — no wrap, h/l pans, y copies   |
+| o                     | pick & open a link (j/k, Enter)               |
+| i                     | preview nearest image (needs `--images`)      |
+| ] / [                 | next / previous file (tabs)                   |
 | r                     | reload the current file from disk             |
 | e                     | open in `$EDITOR` at the nearest heading      |
 | T                     | cycle theme                                   |
@@ -195,7 +217,7 @@ cat post.md | glum -                        # read from stdin
 | A                     | toggle align (center → left → right)          |
 | W                     | toggle code wrap / truncate                   |
 | ?                     | toggle help overlay                           |
-| q / Esc               | quit (reading) or close overlay               |
+| q                     | quit (Esc closes overlays but never quits)    |
 | Ctrl-C                | force quit from any mode                      |
 
 ## Position and preference memory
