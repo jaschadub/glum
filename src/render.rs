@@ -5,8 +5,8 @@
 //! the runs get concatenated, typographically smartened, word-wrapped to the
 //! current measure, and then span styling is restitched onto the wrapped output.
 //!
-//! Code blocks, block quotes, and lists have dedicated prefixes/gutters and
-//! their own wrap behavior so they read well without any visible markdown syntax.
+//! Block quotes and lists have dedicated gutters. Code rows preserve source
+//! indentation and stay unwrapped unless wrapping is explicitly enabled.
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
@@ -21,8 +21,8 @@ use crate::typography::smarten;
 /// contents, code blocks (for clipboard copy), links and images (for the
 /// open/preview modes).
 pub struct Rendered {
-    /// Pre-styled, pre-wrapped visual rows. Index these directly by
-    /// viewport offset.
+    /// Pre-styled visual rows. Prose is wrapped; unwrapped code may extend
+    /// past the viewport for horizontal panning. Index rows by viewport offset.
     pub lines: Vec<Line<'static>>,
     /// Headings in document order, each carrying both the visual row
     /// index and the source line number for editor handoff.
@@ -30,9 +30,9 @@ pub struct Rendered {
     /// Fenced code blocks in document order, with raw source preserved
     /// so clipboard copies are independent of visual wrapping.
     pub code_blocks: Vec<CodeBlockEntry>,
-    /// Widest visual row in `lines`, measured in display columns. Prose
-    /// rows are bounded by the reading measure; tables may exceed it, so
-    /// the display can grow its drawing rect to this width before clipping.
+    /// Widest non-code row, measured in display columns. Tables may exceed
+    /// the prose measure. Code is drawn separately at full terminal width
+    /// and must not change the placement of prose or tables.
     pub max_width: usize,
     /// Links in document order, for the `o` link-open mode.
     pub links: Vec<LinkEntry>,
@@ -66,9 +66,9 @@ pub struct ImageEntry {
 /// and the raw (unhighlighted, untruncated) source text.
 #[derive(Debug, Clone)]
 pub struct CodeBlockEntry {
-    /// Visual-row index of the top rule (the `── lang ──` line).
+    /// Visual-row index of the first code row.
     pub start_line: usize,
-    /// Visual-row index of the bottom rule.
+    /// Visual-row index of the last code row.
     pub end_line: usize,
     /// Fenced info string (e.g. `"rust"`, `"py"`), lowercased.
     pub lang: String,
@@ -886,20 +886,7 @@ impl Renderer {
     }
 
     fn flush_code_block(&mut self) {
-        // Code blocks render with top + bottom rules only, no side borders.
-        // Side borders would get picked up by terminal mouse selection and
-        // pollute pasted code, so we keep the rules plus the `code_bg` fill
-        // for visual separation and let the content be cleanly copyable.
-        //
-        //   ─── rust ───────────────────────── ⎘ y ───
-        //    fn main() {
-        //        println!("hi");
-        //    }
-        //   ──────────────────────────────────────────
-        //
-        // The `⎘ y` copy-hint is only shown when OSC 52 has a reasonable
-        // chance of reaching the clipboard (i.e. not an SSH session, where
-        // tmux/forwarding often strips the escape sequence).
+        self.blank();
         let code = std::mem::take(&mut self.code_buf);
         let lang = std::mem::take(&mut self.code_lang);
         let lang_label = lang
@@ -907,159 +894,35 @@ impl Renderer {
             .next()
             .unwrap_or("")
             .to_string();
-
-        let width = self.inner_width();
-        // One-column left padding keeps code slightly inset so the block
-        // reads as distinct. Mouse-selecting will grab the leading space,
-        // which is harmless in pasted code.
-        let left_pad = 1usize;
-        let code_cols = width.saturating_sub(left_pad).max(1);
-
-        let rule_style = self.theme.rule_style();
-        let pad_style = self.theme.code_style();
-        let label_style = self.theme.dim_style();
-        let base_style = self.theme.base_style();
-
-        let show_copy_hint = !crate::clipboard::is_ssh_session();
-        let copy_hint = " \u{2398} y ";
-        let copy_hint_w = if show_copy_hint {
-            unicode_width::UnicodeWidthStr::width(copy_hint)
-        } else {
-            0
-        };
-
-        // Vivid layout uses a heavy top rule (━) to reinforce the hierarchy
-        // — the heading rules already use heavier glyphs in vivid, so code
-        // blocks should match. Minimal keeps the lighter ─ on both rules.
-        let top_rule_ch = if matches!(self.layout, LayoutName::Vivid) {
-            "\u{2501}"
-        } else {
-            "\u{2500}"
-        };
-
-        // Top rule with optional language label and optional copy hint.
-        let mut top_spans: Vec<Span<'static>> = Vec::new();
-        if lang_label.is_empty() {
-            let dashes_w = width.saturating_sub(copy_hint_w);
-            top_spans.push(Span::styled(top_rule_ch.repeat(dashes_w), rule_style));
-            if show_copy_hint {
-                top_spans.push(Span::styled(copy_hint.to_string(), label_style));
-            }
-        } else {
-            let lbl = format!(" {lang_label} ");
-            let lbl_w = unicode_width::UnicodeWidthStr::width(lbl.as_str());
-            let leading_w = 3;
-            let mid_w = width.saturating_sub(leading_w + lbl_w + copy_hint_w).max(1);
-            top_spans.push(Span::styled(top_rule_ch.repeat(leading_w), rule_style));
-            top_spans.push(Span::styled(lbl, label_style));
-            top_spans.push(Span::styled(top_rule_ch.repeat(mid_w), rule_style));
-            if show_copy_hint {
-                top_spans.push(Span::styled(copy_hint.to_string(), label_style));
-            }
-        }
-        let start_line = self.out.len();
-        self.out.push(Line::from(top_spans).style(base_style));
-
-        let pad_str = " ".repeat(left_pad);
-        // Remove only the parser's final line terminator. Keep deliberate
-        // trailing blank lines so line selection and copying agree.
+        // Keep deliberate trailing blank lines, excluding the final terminator.
         let trimmed = code.strip_suffix('\n').unwrap_or(&code);
-        // Continuation lines of a soft-wrapped code line start with a small
-        // dim arrow so the reader can tell the line is wrapped rather than
-        // a genuine new code line.
-        let cont_marker = " \u{21AA} "; //  ↪
-        let cont_w = unicode_width::UnicodeWidthStr::width(cont_marker);
-
-        let mut line_visuals: Vec<(usize, usize)> = Vec::new();
-
+        let start_line = self.out.len();
+        let mut line_visuals = Vec::new();
         for raw_line in trimmed.split('\n') {
-            let src_visual_start = self.out.len();
+            let start = self.out.len();
             let normalized = raw_line.replace('\t', "    ");
-            let line_w = unicode_width::UnicodeWidthStr::width(normalized.as_str());
-
-            // Three cases:
-            //   1. Fits in code_cols → render as-is.
-            //   2. Too long + wrap_code on → split into chunks and emit
-            //      multiple visual lines with a continuation marker.
-            //   3. Too long + wrap_code off → truncate with `…`.
-            if line_w <= code_cols {
-                self.push_code_line(
-                    &pad_str,
-                    &normalized,
-                    code_cols,
-                    &lang,
-                    pad_style,
-                    base_style,
-                );
-                line_visuals.push((src_visual_start, self.out.len() - 1));
-                continue;
-            }
-
-            if self.wrap_code {
-                // First chunk occupies the full width; continuations lose
-                // `cont_w` columns to the marker.
-                let first_chunk_w = code_cols;
-                let cont_chunk_w = code_cols.saturating_sub(cont_w).max(1);
-                let chunks = wrap_code_line(&normalized, first_chunk_w, cont_chunk_w);
-                for (i, chunk) in chunks.iter().enumerate() {
-                    if i == 0 {
-                        self.push_code_line(
-                            &pad_str, chunk, code_cols, &lang, pad_style, base_style,
-                        );
-                    } else {
-                        // Render: <pad><cont_marker><highlighted chunk><trailing pad>
-                        let chunk_w = unicode_width::UnicodeWidthStr::width(chunk.as_str());
-                        let trailing = code_cols.saturating_sub(cont_w).saturating_sub(chunk_w);
-                        let mut spans: Vec<Span<'static>> = Vec::new();
-                        spans.push(Span::styled(pad_str.clone(), pad_style));
-                        spans.push(Span::styled(cont_marker.to_string(), label_style));
-                        spans.extend(highlight_line(chunk, &lang, self.theme));
-                        if trailing > 0 {
-                            spans.push(Span::styled(" ".repeat(trailing), pad_style));
-                        }
-                        self.out.push(Line::from(spans).style(base_style));
-                    }
-                }
+            // Unwrapped rows retain their full text for horizontal panning.
+            // Neither path adds borders, indentation, padding, or markers.
+            let chunks = if self.wrap_code {
+                wrap_code_line(&normalized, self.table_width, self.table_width)
             } else {
-                let visible = truncate_to_width(&normalized, code_cols);
-                self.push_code_line(&pad_str, &visible, code_cols, &lang, pad_style, base_style);
+                vec![normalized]
+            };
+            for chunk in chunks {
+                self.out.push(
+                    Line::from(highlight_line(&chunk, &lang, self.theme))
+                        .style(self.theme.base_style()),
+                );
             }
-            line_visuals.push((src_visual_start, self.out.len() - 1));
+            line_visuals.push((start, self.out.len() - 1));
         }
-
-        self.out
-            .push(Line::styled("\u{2500}".repeat(width), rule_style));
-
-        let end_line = self.out.len() - 1;
         self.code_blocks.push(CodeBlockEntry {
             start_line,
-            end_line,
+            end_line: self.out.len() - 1,
             lang: lang_label,
             code: trimmed.to_string(),
             line_visuals,
         });
-    }
-
-    /// Render one code line (already known to fit within `width`) with the
-    /// left pad, highlighted tokens, and trailing code-bg fill.
-    fn push_code_line(
-        &mut self,
-        pad: &str,
-        text: &str,
-        width: usize,
-        lang: &str,
-        pad_style: Style,
-        base_style: Style,
-    ) {
-        let content_w = unicode_width::UnicodeWidthStr::width(text);
-        let trailing = width.saturating_sub(content_w);
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        spans.push(Span::styled(pad.to_string(), pad_style));
-        spans.extend(highlight_line(text, lang, self.theme));
-        if trailing > 0 {
-            spans.push(Span::styled(" ".repeat(trailing), pad_style));
-        }
-        self.out.push(Line::from(spans).style(base_style));
     }
 
     fn flush_table(&mut self) {
@@ -1175,12 +1038,17 @@ impl Renderer {
         let max_width = self
             .out
             .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
-                    .sum::<usize>()
+            .enumerate()
+            .filter(|(row, _)| {
+                let idx = self
+                    .code_blocks
+                    .partition_point(|block| block.end_line < *row);
+                !self
+                    .code_blocks
+                    .get(idx)
+                    .is_some_and(|block| block.start_line <= *row)
             })
+            .map(|(_, line)| line.width())
             .max()
             .unwrap_or(0);
 
@@ -1311,8 +1179,7 @@ fn render_wrapped_row(
 /// the tail trailing past the right edge. We walk char-by-char counting
 /// display width (CJK, emoji) and emit chunks when we hit the budget.
 ///
-/// The first chunk uses `first_w`; subsequent chunks use `rest_w` (which is
-/// narrower to make room for the continuation marker).
+/// The first chunk uses `first_w`; subsequent chunks use `rest_w`.
 fn wrap_code_line(line: &str, first_w: usize, rest_w: usize) -> Vec<String> {
     if line.is_empty() {
         return vec![String::new()];
@@ -1450,6 +1317,20 @@ mod tests {
     }
 
     #[test]
+    fn code_rows_keep_source_spacing_without_layout_decoration() {
+        let command = format!("  echo {}  ", "x".repeat(120));
+        let md = format!("```sh\n{command}\n\n```\n");
+        for layout in [LayoutName::Minimal, LayoutName::Vivid] {
+            let r = render(&md, 20, 40, plain(), layout, false);
+            let block = &r.code_blocks[0];
+            assert_eq!(r.lines[block.start_line].to_string(), command);
+            assert_eq!(block.line_visuals[0], (block.start_line, block.start_line));
+            assert!(r.lines[block.end_line].to_string().is_empty());
+            assert_eq!(r.max_width, 0, "wide code must not widen the prose column");
+        }
+    }
+
+    #[test]
     fn code_copy_preserves_trailing_blank_lines_and_whitespace() {
         let md = "```sh\n\techo hi  \n\n\n```\n";
         let r = render(md, 20, 20, plain(), LayoutName::Minimal, true);
@@ -1461,14 +1342,14 @@ mod tests {
     #[test]
     fn code_block_line_visuals_track_source_lines() {
         // Short lines: one visual row per source line, all rows inside the
-        // block's [start_line+1, end_line-1] range (rules excluded).
+        // block's inclusive [start_line, end_line] range.
         let md = "```\nfn main() {\n    println!(\"hi\");\n}\n```\n";
         let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
         let b = r.code_blocks.first().expect("one code block");
         assert_eq!(b.line_visuals.len(), 3, "three source lines");
         for (vs, ve) in &b.line_visuals {
             assert_eq!(vs, ve, "short line should occupy exactly one visual row");
-            assert!(*vs > b.start_line && *ve < b.end_line);
+            assert!(*vs >= b.start_line && *ve <= b.end_line);
         }
         // Source lines recoverable from code.
         let src: Vec<&str> = b.code.split('\n').collect();

@@ -9,7 +9,7 @@ terminal" than a markdown-as-markdown renderer.
 
 Glum optimizes for *reading prose*, not decorating syntax. Headings become
 typographic styles, not `#` prefixes; links show their URL inline so you can
-see and click them; code blocks are framed with rules and highlighted; tables
+see and click them; code blocks are highlighted and cleanly copyable; tables
 wrap rather than truncate; the file scrolls a page at a time like `less`.
 
 ## Install
@@ -82,9 +82,10 @@ cosign verify-blob \
 - **Reader layout** — narrow, centered measure (default 72 cols), five
   themes (`T`), two typographic layouts (`L`), three alignments (`A`).
   All toggle at runtime and are remembered across runs.
-- **Code blocks** — syntax highlighting for 12 languages, top/bottom
-  rules with a language label, no side borders. Long lines soft-wrap
-  with `↪` or truncate with `…` (`W`).
+- **Code blocks** — syntax highlighting for 12 languages, flush-left and
+  full-width within the document. No borders, added padding, line numbers,
+  or wrap markers. Code stays unwrapped by default; `h` / `l` pans long lines,
+  `0` / `$` jumps to either end, and `W` toggles optional wrapping.
 - **Copy** — `y` the block, `Y` pick source lines, `R` open a full-width
   copy view without borders, margins, wrap markers, or default line numbers.
   In either picker, `v` starts a line range, j/k extends it, and `y` copies;
@@ -137,7 +138,9 @@ glum [OPTIONS] <PATH>...
   -H, --heading <TITLE>     jump to first heading containing TITLE (case-insensitive)
       --toc                 open with the table of contents overlay visible
       --reset-position      ignore saved position; start at the top
-      --truncate-code       truncate long code lines with `…` instead of soft-wrapping
+      --wrap-code           soft-wrap long code lines (also toggled with W)
+      --no-wrap-code        keep source lines unwrapped; h/l pans (default)
+      --truncate-code       compatibility alias for --no-wrap-code
       --no-remember         don't persist reading position / preferences across runs
       --mouse               enable mouse-wheel scrolling (disables native text selection)
       --images              enable `i` image preview (kitty / sixel / iTerm2 / half-block)
@@ -208,7 +211,8 @@ cat post.md | glum -                        # read from stdin
 | c / Esc               | clear active search                           |
 | y                     | copy the in-view code block to clipboard      |
 | Y                     | pick code lines (j/k, v range, y / Enter copy) |
-| R                     | clean copy view — no wrap, h/l pans, y copies |
+| R                     | focused code view — h/l pans, y copies        |
+| h / l, 0 / $          | pan unwrapped code, jump to left / right end  |
 | o                     | pick & open a link (j/k, Enter)               |
 | i                     | preview nearest image (needs `--images`)      |
 | ] / [                 | next / previous file (tabs)                   |
@@ -217,21 +221,27 @@ cat post.md | glum -                        # read from stdin
 | T                     | cycle theme                                   |
 | L                     | cycle layout (minimal ↔ vivid)                |
 | A                     | toggle align (center → left → right)          |
-| W                     | toggle code wrap / truncate                   |
+| W                     | toggle code wrapping (off by default)         |
 | ?                     | toggle help overlay                           |
 | q                     | quit (Esc closes overlays but never quits)    |
 | Ctrl-C                | force quit from any mode                      |
 
 ### Copying code and commands
 
-Press `R` near a code block to open the clean copy view. Code starts at the
-left edge of the terminal, with no side borders, added indentation, or wrap
-arrows. Drag to select visible text using your terminal's normal copy
-shortcut. This also works with `--mouse`: Glum releases mouse capture while
-the copy view is open and restores it when you leave.
+Code blocks are cleanly copyable in the normal document view: they start
+at the left edge of the terminal without borders, added indentation,
+line numbers, or wrap arrows. The surrounding document stays visible.
+Drag to select visible text using your terminal's normal copy shortcut.
+Use `h` / `l` to pan long code lines, or `0` / `$` to jump to either end.
+Press `W` or use `--wrap-code` for optional wrapping; a saved wrapping
+preference is restored unless overridden with `--no-wrap-code`.
+
+Press `R` near a code block for the focused copy view. Native selection
+also works there with `--mouse`: Glum releases mouse capture while the
+focused view is open and restores it when you leave.
 
 For an exact copy, including commands longer than the screen and original
-tabs, use the keyboard:
+tabs, press `y` while reading to copy a block. In the focused view (`R`):
 
 - `j` / `k` or arrows: choose a source line; `y` / Enter copies it.
 - `v`, then movement: select a range of lines; `y` / Enter copies the range.

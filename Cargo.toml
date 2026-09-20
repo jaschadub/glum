@@ -33,7 +33,7 @@ extended-description = """\
 A reading-focused terminal markdown viewer — more like \"Reader Mode in your \
 terminal\" than a markdown-as-markdown renderer. Optimizes for reading prose: \
 headings become typographic styles, links show their URL inline, code blocks \
-are framed and highlighted, tables wrap rather than truncate, and the file \
+are borderless and highlighted, tables wrap rather than truncate, and the file \
 scrolls a page at a time like less."""
 assets = [
     ["target/release/glum", "usr/bin/", "755"],

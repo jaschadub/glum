@@ -8,6 +8,12 @@ All notable changes to glum are documented in this file. Format based on
 
 ### Changed
 
+- Code blocks now use the clean layout in the full document by default:
+  flush-left, full-width, borderless, and unwrapped, with source indentation
+  preserved. Prose and tables keep their reading layout. `h` / `l` and
+  `0` / `$` pan code; `W` or `--wrap-code` enables optional wrapping.
+- Search reveals matches beyond the right edge of unwrapped code. The
+  focused `R` view remains available for line-range selection.
 - `R` now opens a full-width, borderless copy view with line numbers off
   by default. Mouse capture is released in this view so native text
   selection works even with `--mouse`.

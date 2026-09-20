@@ -65,7 +65,7 @@ pub struct AppConfig {
     pub layout: LayoutName,
     /// Initial horizontal alignment of the reading column.
     pub align: Align,
-    /// When true, long code lines soft-wrap; when false, they truncate with `…`.
+    /// When true, long code lines soft-wrap; otherwise they pan horizontally.
     pub wrap_code: bool,
     /// Persistence handle for reading position and remembered preferences.
     pub store: PositionStore,
@@ -211,6 +211,8 @@ struct App {
     layout_name: LayoutName,
     align: Align,
     wrap_code: bool,
+    /// Horizontal offset for unwrapped code in the document view.
+    code_h_off: usize,
     rendered: Rendered,
     /// Measure the current `rendered` was produced at: the configured measure
     /// clamped to the terminal width. Re-rendering at the effective width keeps
@@ -234,6 +236,7 @@ struct App {
     /// Scroll offset when the search prompt opened; restored on cancel and
     /// used to pick the first match at-or-after the reading position.
     search_origin: Option<usize>,
+    search_code_origin: usize,
     status: Option<(String, std::time::Instant, StatusKind)>,
     /// Time of the last detected filesystem change; used to settle bursty
     /// editor writes before triggering a reload.
@@ -278,6 +281,7 @@ impl App {
             layout_name,
             align,
             wrap_code,
+            code_h_off: 0,
             rendered,
             render_measure,
             offset: saved_offset,
@@ -289,6 +293,7 @@ impl App {
             search_query: String::new(),
             search_cache: None,
             search_origin: None,
+            search_code_origin: 0,
             status: None,
             pending_reload_at: None,
             pending_editor: false,
@@ -385,6 +390,7 @@ impl App {
             // the search prompt visible with the query filled in and matches
             // live. Enter commits to reading mode, Esc cancels.
             self.search_origin = Some(self.offset);
+            self.search_code_origin = self.code_h_off;
             self.update_matches(&query);
             self.snap_to_match_near(self.offset);
             let cursor = query.chars().count();
@@ -517,13 +523,43 @@ impl App {
 
     fn toggle_wrap_code(&mut self) {
         self.wrap_code = !self.wrap_code;
+        self.code_h_off = 0;
         self.re_render();
         self.cfg.store.set_wrap_code(self.wrap_code).ok();
         self.set_status(if self.wrap_code {
             "code: wrap"
         } else {
-            "code: truncate"
+            "code: no wrap (h/l pan)"
         });
+    }
+
+    fn code_pan_limit(&self) -> usize {
+        if self.wrap_code {
+            return 0;
+        }
+        let bottom = self
+            .offset
+            .saturating_add(self.last_viewport_h.saturating_sub(1 + self.tab_rows()) as usize);
+        self.rendered
+            .code_blocks
+            .iter()
+            .filter(|block| block.start_line < bottom && block.end_line >= self.offset)
+            .map(|block| {
+                max_source_line_width(block).saturating_sub(self.last_render_width as usize)
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn pan_code(&mut self, delta: isize) {
+        self.code_h_off = self
+            .code_h_off
+            .saturating_add_signed(delta)
+            .min(self.code_pan_limit());
+        self.set_status(format!(
+            "code column {} (h/l pan · 0 left · W wrap)",
+            self.code_h_off + 1
+        ));
     }
 
     fn percent(&self) -> u16 {
@@ -587,6 +623,47 @@ impl App {
             .unwrap_or(0);
         self.search_cursor = idx;
         self.jump_to(self.search_matches[idx]);
+        self.reveal_code_match(self.search_matches[idx]);
+    }
+
+    /// Bring matches beyond the right edge into view without wrapping code.
+    fn reveal_code_match(&mut self, row: usize) {
+        if self.wrap_code || self.search_query.is_empty() {
+            return;
+        }
+        let idx = self
+            .rendered
+            .code_blocks
+            .partition_point(|block| block.end_line < row);
+        let Some(block) = self
+            .rendered
+            .code_blocks
+            .get(idx)
+            .filter(|block| block.start_line <= row)
+        else {
+            return;
+        };
+        let text = self.rendered.lines[row].to_string();
+        let Some(at) = normalize_for_search(&text).find(&self.search_query) else {
+            return;
+        };
+        let mut bytes = 0;
+        let mut column = 0;
+        for ch in text.chars() {
+            let length = normalize_for_search(&ch.to_string()).len();
+            if bytes + length > at {
+                break;
+            }
+            bytes += length;
+            column += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+        let width = self.last_render_width as usize;
+        let match_width = unicode_width::UnicodeWidthStr::width(self.search_query.as_str());
+        if column < self.code_h_off || column + match_width > self.code_h_off + width {
+            self.code_h_off = column
+                .saturating_sub(width / 4)
+                .min(max_source_line_width(block).saturating_sub(width));
+        }
     }
 
     /// Run a committed search: update matches and scroll to the nearest one.
@@ -598,6 +675,7 @@ impl App {
                 // Failed search: return to where the reader was before the
                 // live preview moved the view.
                 self.jump_to(origin);
+                self.code_h_off = self.search_code_origin;
                 self.set_status("no matches");
             }
         } else {
@@ -821,6 +899,7 @@ impl App {
         self.cfg.path = d.path.clone();
         self.cfg.display_name = d.display_name.clone();
         self.cfg.source = d.source.clone();
+        self.code_h_off = 0;
         self.mode = Mode::Reading;
         self.clear_search();
         self.re_render();
@@ -991,6 +1070,7 @@ impl App {
         }
         let target = self.search_matches[self.search_cursor];
         self.jump_to(target);
+        self.reveal_code_match(target);
     }
 }
 
@@ -1548,8 +1628,13 @@ fn handle_key_reading(app: &mut App, key: KeyEvent) -> Result<bool> {
         KeyCode::Char('L') => app.cycle_layout(),
         KeyCode::Char('A') => app.toggle_align(),
         KeyCode::Char('W') => app.toggle_wrap_code(),
+        KeyCode::Char('h') => app.pan_code(-8),
+        KeyCode::Char('l') => app.pan_code(8),
+        KeyCode::Char('0') => app.pan_code(isize::MIN),
+        KeyCode::Char('$') => app.pan_code(isize::MAX),
         KeyCode::Char('/') => {
             app.search_origin = Some(app.offset);
+            app.search_code_origin = app.code_h_off;
             app.mode = Mode::Search {
                 input: String::new(),
                 cursor: 0,
@@ -1602,6 +1687,10 @@ fn handle_key_line_pick(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.mode = Mode::Reading;
             return Ok(false);
         }
+        KeyCode::Char('h') => app.pan_code(-8),
+        KeyCode::Char('l') => app.pan_code(8),
+        KeyCode::Char('0') => app.pan_code(isize::MIN),
+        KeyCode::Char('$') => app.pan_code(isize::MAX),
         KeyCode::Char('v') => {
             anchor = if anchor.is_some() {
                 None
@@ -2063,6 +2152,7 @@ fn handle_key_search(app: &mut App, key: KeyEvent) -> Result<bool> {
             // moved the view.
             if let Some(origin) = app.search_origin.take() {
                 app.jump_to(origin);
+                app.code_h_off = app.search_code_origin;
             }
         }
     }
@@ -2174,6 +2264,7 @@ fn draw(f: &mut ratatui::Frame<'_>, app: &mut App) {
     app.last_viewport_h = size.height;
     app.sync_measure(size.width);
     app.offset = app.offset.min(app.max_offset());
+    app.code_h_off = app.code_h_off.min(app.code_pan_limit());
 
     // Paint the whole background so terminal defaults don't leak through.
     let bg_block = Block::default().style(app.theme.base_style());
@@ -2237,8 +2328,8 @@ fn draw(f: &mut ratatui::Frame<'_>, app: &mut App) {
         .split(body_rect);
     let text_rect = horizontal[1];
 
-    draw_body(f, app, text_rect);
     draw_scrollbar(f, app, body_rect);
+    draw_body(f, app, text_rect, body_rect);
     draw_footer(f, app, footer_rect);
 
     if matches!(app.mode, Mode::ImageView { .. }) {
@@ -2330,7 +2421,7 @@ fn draw_scrollbar(f: &mut ratatui::Frame<'_>, app: &App, body: Rect) {
     }
 }
 
-fn draw_body(f: &mut ratatui::Frame<'_>, app: &App, rect: Rect) {
+fn draw_body(f: &mut ratatui::Frame<'_>, app: &App, rect: Rect, code_rect: Rect) {
     let total = app.rendered.lines.len();
     let start = app.offset.min(total);
     let end = (start + rect.height as usize).min(total);
@@ -2365,7 +2456,7 @@ fn draw_body(f: &mut ratatui::Frame<'_>, app: &App, rect: Rect) {
     // LinePick: reverse-highlight every visual row of the selected source line
     // that intersects the viewport. The block may soft-wrap, so a single
     // source line can cover multiple rows — highlight them all so the wrapped
-    // continuation (`↪ …`) is visually part of the same selection.
+    // continuation is visually part of the same selection.
     if let Mode::LinePick {
         block_idx,
         line_idx,
@@ -2399,10 +2490,63 @@ fn draw_body(f: &mut ratatui::Frame<'_>, app: &App, rect: Rect) {
         }
     }
 
-    // No widget-level wrap: lines are pre-wrapped to the effective measure,
-    // and re-wrapping here would break the line-per-row scroll math.
-    let para = Paragraph::new(display).style(app.theme.base_style());
-    f.render_widget(para, rect);
+    // Prose keeps its reading column. Code owns the entire terminal row,
+    // including the scrollbar column, so drag-selection contains only code.
+    let mut last_code_block = None;
+    let mut code_pan = 0;
+    for (index, line) in display.into_iter().enumerate() {
+        let row = start + index;
+        let block_idx = app
+            .rendered
+            .code_blocks
+            .partition_point(|block| block.end_line < row);
+        let code_block = app
+            .rendered
+            .code_blocks
+            .get(block_idx)
+            .filter(|block| block.start_line <= row);
+        let (line, target) = if let Some(block) = code_block {
+            let target = Rect::new(code_rect.x, code_rect.y + index as u16, code_rect.width, 1);
+            if last_code_block != Some(block_idx) {
+                code_pan = app
+                    .code_h_off
+                    .min(max_source_line_width(block).saturating_sub(code_rect.width as usize));
+                last_code_block = Some(block_idx);
+            }
+            f.render_widget(Clear, target);
+            (
+                slice_styled_line(&line, code_pan, target.width as usize),
+                target,
+            )
+        } else {
+            (
+                line,
+                Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
+            )
+        };
+        f.render_widget(Paragraph::new(line).style(app.theme.base_style()), target);
+    }
+}
+
+/// Slice display columns while preserving syntax and selection styles.
+fn slice_styled_line(line: &Line<'static>, mut skip: usize, mut keep: usize) -> Line<'static> {
+    let mut spans = Vec::new();
+    for span in &line.spans {
+        let width = unicode_width::UnicodeWidthStr::width(span.content.as_ref());
+        if skip >= width && skip > 0 {
+            skip -= width;
+            continue;
+        }
+        let clipped = width.saturating_sub(skip) > keep;
+        let visible = slice_by_display_cols(&span.content, skip, keep);
+        keep = keep.saturating_sub(unicode_width::UnicodeWidthStr::width(visible.as_str()));
+        spans.push(Span::styled(visible, span.style));
+        skip = 0;
+        if clipped || keep == 0 {
+            break;
+        }
+    }
+    Line::from(spans).style(line.style)
 }
 
 /// Re-style every span of a line with `patch` applied on top (used for
@@ -2987,7 +3131,7 @@ fn draw_help_overlay(f: &mut ratatui::Frame<'_>, app: &App, area: Rect) {
         ("T", "cycle theme"),
         ("L", "cycle layout"),
         ("A", "toggle align (center/left/right)"),
-        ("W", "toggle code wrap / truncate"),
+        ("W", "toggle code wrapping (default off)"),
         ("/", "search"),
         ("n / N", "next / prev match"),
         ("Tab / \u{2192}", "next match"),
@@ -2995,7 +3139,8 @@ fn draw_help_overlay(f: &mut ratatui::Frame<'_>, app: &App, area: Rect) {
         ("c / Esc", "clear active search"),
         ("y", "copy code block in view"),
         ("Y", "pick code lines (v selects a range)"),
-        ("R", "clean copy view (v range, [/] block)"),
+        ("R", "focused copy view (v range, [/] block)"),
+        ("h/l · 0/$", "pan code · left/right end"),
         ("o", "pick & open a link"),
         ("i", "preview image (needs --images)"),
         ("] / [", "next / prev file (tabs)"),
@@ -3353,6 +3498,118 @@ mod tests {
         assert!(!app.raw_show_line_nums);
         keypress(&mut app, KeyCode::Char('#'));
         assert!(screen(&mut app, 80, 10)[1].starts_with("1  echo hello"));
+    }
+
+    #[test]
+    fn document_code_is_flush_left_while_prose_stays_in_its_column() {
+        let md = "Introduction.\n\n```sh\necho hello\n  echo world\n```\n\nAfterwards.\n";
+        let mut app = test_app(md);
+        app.wrap_code = false;
+        app.re_render();
+        for align in [Align::Center, Align::Left, Align::Right] {
+            app.align = align;
+            let rows = screen(&mut app, 80, 24);
+            assert!(matches!(app.mode, Mode::Reading));
+            assert_eq!(
+                rows.iter()
+                    .find(|r| r.contains("echo hello"))
+                    .unwrap()
+                    .trim_end(),
+                "echo hello"
+            );
+            assert_eq!(
+                rows.iter()
+                    .find(|r| r.contains("echo world"))
+                    .unwrap()
+                    .trim_end(),
+                "  echo world"
+            );
+            assert!(rows
+                .iter()
+                .any(|r| r.trim() == "Introduction." && r.starts_with(' ')));
+            assert!(rows.iter().any(|r| r.trim() == "Afterwards."));
+        }
+    }
+
+    #[test]
+    fn document_code_pan_uses_full_width_and_leaves_prose_visible() {
+        let command = format!("{}END", "x".repeat(100));
+        let mut app = test_app(&format!("Before.\n\n```\n{command}\n```\n\nAfter.\n"));
+        app.wrap_code = false;
+        app.re_render();
+        let before = screen(&mut app, 40, 20);
+        assert!(before.iter().any(|r| r == &"x".repeat(40)));
+        keypress(&mut app, KeyCode::Char('$'));
+        let after = screen(&mut app, 40, 20);
+        assert!(after.iter().any(|r| r.ends_with("END")));
+        assert_eq!(
+            before.iter().find(|r| r.contains("Before.")),
+            after.iter().find(|r| r.contains("Before."))
+        );
+        assert_eq!(
+            selected_code(&app.rendered.code_blocks[0], 0, None),
+            Some(command)
+        );
+        keypress(&mut app, KeyCode::Char('W'));
+        assert!(app.wrap_code);
+        assert_eq!(app.code_h_off, 0);
+        assert!(
+            app.rendered.code_blocks[0].line_visuals[0].1
+                > app.rendered.code_blocks[0].line_visuals[0].0
+        );
+        keypress(&mut app, KeyCode::Char('W'));
+        screen(&mut app, 120, 20);
+        keypress(&mut app, KeyCode::Char('$'));
+        assert_eq!(app.code_h_off, 0);
+    }
+
+    #[test]
+    fn document_code_rows_do_not_include_scrollbar_symbols() {
+        let mut app = test_app(&format!("```\n{}\n```\n", "echo hi\n".repeat(100)));
+        app.wrap_code = false;
+        app.re_render();
+        let rows = screen(&mut app, 80, 10);
+        for row in rows.iter().filter(|r| r.contains("echo hi")) {
+            assert_eq!(row.trim_end(), "echo hi");
+        }
+    }
+
+    #[test]
+    fn long_code_does_not_shift_prose_and_search_reveals_hidden_match() {
+        let mut app = test_app(&format!("Prose.\n\n```\n{}needle\n```\n", "界".repeat(80)));
+        app.wrap_code = false;
+        app.re_render();
+        let rows = screen(&mut app, 80, 20);
+        assert!(rows
+            .iter()
+            .any(|r| r.starts_with("                    Prose.")));
+        keypress(&mut app, KeyCode::Char('/'));
+        handle_paste(&mut app, "needle");
+        assert!(app.code_h_off > 0);
+        keypress(&mut app, KeyCode::Enter);
+        assert!(screen(&mut app, 80, 20)
+            .iter()
+            .any(|r| r.contains("needle") && r.contains('界')));
+        keypress(&mut app, KeyCode::Char('0'));
+        keypress(&mut app, KeyCode::Char('/'));
+        handle_paste(&mut app, "needle");
+        keypress(&mut app, KeyCode::Esc);
+        assert_eq!(app.code_h_off, 0);
+    }
+
+    #[test]
+    fn styled_code_pan_preserves_wide_characters_and_token_styles() {
+        let red = Style::default().fg(ratatui::style::Color::Red);
+        let line = Line::from(vec![
+            Span::raw("ab"),
+            Span::styled("界cd", red),
+            Span::raw("ef"),
+        ]);
+        let sliced = slice_styled_line(&line, 3, 4);
+        assert_eq!(sliced.to_string(), " cde");
+        assert_eq!(sliced.spans[0].style, red);
+        let edge = Line::from(vec![Span::styled("界", red), Span::raw("X")]);
+        assert_eq!(slice_styled_line(&edge, 0, 1).to_string(), "");
     }
 
     #[test]

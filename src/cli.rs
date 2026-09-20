@@ -40,8 +40,8 @@ pub struct Cli {
     pub layout: Option<LayoutName>,
 
     /// Horizontal alignment of the reading column. `center` leaves symmetric
-    /// margins for classic reader-mode feel; `left` anchors the column to the
-    /// left edge so code blocks don't appear indented in wide terminals.
+    /// margins for classic reader-mode feel; `left` anchors prose to the left.
+    /// Code blocks always start at the terminal's left edge independently.
     /// Press `A` at runtime to toggle.
     #[arg(long, value_enum)]
     pub align: Option<Align>,
@@ -74,12 +74,19 @@ pub struct Cli {
     #[arg(short = 'f', long = "follow")]
     pub follow: bool,
 
-    /// Truncate long code lines with `…` instead of soft-wrapping them.
-    /// Default is to soft-wrap so no code is hidden; pass this flag to
-    /// get tight single-line-per-code-line layout. Press `W` at runtime
-    /// to toggle.
-    #[arg(long = "truncate-code")]
+    /// Keep code lines unwrapped (the default). Use h/l to pan long lines.
+    /// Overrides a remembered wrapping preference. Press W to toggle.
+    #[arg(
+        long = "truncate-code",
+        visible_alias = "no-wrap-code",
+        conflicts_with = "wrap_code"
+    )]
     pub truncate_code: bool,
+
+    /// Soft-wrap long code lines. By default code stays on its source lines;
+    /// h/l pans horizontally. Press W at runtime to toggle wrapping.
+    #[arg(long)]
+    pub wrap_code: bool,
 
     /// Enable mouse wheel scrolling. Off by default because mouse capture
     /// disables the terminal's native click-and-drag text selection — which

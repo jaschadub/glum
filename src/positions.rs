@@ -164,7 +164,7 @@ impl PositionStore {
     }
 
     /// The last code-wrap preference the user was reading with (`true` =
-    /// soft-wrap with `↪`, `false` = truncate with `…`).
+    /// soft-wrap, `false` = unwrapped with horizontal panning).
     pub fn wrap_code(&self) -> Option<bool> {
         self.inner.wrap_code
     }

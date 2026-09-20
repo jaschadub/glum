@@ -101,12 +101,13 @@ fn real_main() -> Result<()> {
         .or_else(|| store.align().and_then(Align::from_label))
         .unwrap_or(Align::Center);
 
-    // Default is soft-wrap. --truncate-code flips it off; otherwise the
-    // remembered preference wins, and first-run default is wrap.
+    // Code is unwrapped by default. Explicit flags override saved preferences.
     let wrap_code = if cli.truncate_code {
         false
+    } else if cli.wrap_code {
+        true
     } else {
-        store.wrap_code().unwrap_or(true)
+        store.wrap_code().unwrap_or(false)
     };
 
     // Image preview needs a terminal-graphics handshake, which must happen
