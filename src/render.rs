@@ -76,8 +76,8 @@ pub struct CodeBlockEntry {
     /// clipboard path can hand the user exactly what they authored.
     pub code: String,
     /// Inclusive `(start, end)` visual-row range in `Rendered::lines` for each
-    /// source line of `code` (as split on `\n`, after trimming trailing
-    /// newlines). A line that soft-wraps spans multiple visual rows; a line
+    /// source line of `code` (as split on `\n`, after removing the final
+    /// line terminator). A line that soft-wraps spans multiple visual rows; a line
     /// rendered unwrapped has `start == end`. Enables per-source-line
     /// navigation and copy independent of visual wrap state.
     pub line_visuals: Vec<(usize, usize)>,
@@ -961,7 +961,9 @@ impl Renderer {
         self.out.push(Line::from(top_spans).style(base_style));
 
         let pad_str = " ".repeat(left_pad);
-        let trimmed = code.trim_end_matches('\n');
+        // Remove only the parser's final line terminator. Keep deliberate
+        // trailing blank lines so line selection and copying agree.
+        let trimmed = code.strip_suffix('\n').unwrap_or(&code);
         // Continuation lines of a soft-wrapped code line start with a small
         // dim arrow so the reader can tell the line is wrapped rather than
         // a genuine new code line.
@@ -1033,7 +1035,7 @@ impl Renderer {
             start_line,
             end_line,
             lang: lang_label,
-            code: code.trim_end_matches('\n').to_string(),
+            code: trimmed.to_string(),
             line_visuals,
         });
     }
@@ -1445,6 +1447,15 @@ mod tests {
         let r = render(md, 60, 60, plain(), LayoutName::Minimal, true);
         let any_code_line = r.lines.iter().any(|l| l.to_string().contains("fn main"));
         assert!(any_code_line);
+    }
+
+    #[test]
+    fn code_copy_preserves_trailing_blank_lines_and_whitespace() {
+        let md = "```sh\n\techo hi  \n\n\n```\n";
+        let r = render(md, 20, 20, plain(), LayoutName::Minimal, true);
+        let block = &r.code_blocks[0];
+        assert_eq!(block.code, "\techo hi  \n\n");
+        assert_eq!(block.line_visuals.len(), 3);
     }
 
     #[test]

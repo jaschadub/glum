@@ -4,6 +4,24 @@ All notable changes to glum are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `R` now opens a full-width, borderless copy view with line numbers off
+  by default. Mouse capture is released in this view so native text
+  selection works even with `--mouse`.
+- Both code pickers support `v` to select a source-line range and `[` / `]`
+  to move between code blocks. The raw view also supports page navigation.
+
+### Fixed
+
+- Copy feedback is visible in both code pickers.
+- Selecting a partially visible wrapped command starts on that command.
+- Horizontal pan stops at the last full screen of code, including after
+  resizing, and `$` shows the end of long lines without an almost empty view.
+- Copying code preserves deliberate trailing blank lines.
+
 ## [0.3.0] — 2026-07-22
 
 ### Added

@@ -85,9 +85,11 @@ cosign verify-blob \
 - **Code blocks** — syntax highlighting for 12 languages, top/bottom
   rules with a language label, no side borders. Long lines soft-wrap
   with `↪` or truncate with `…` (`W`).
-- **Copy** — `y` the block, `Y` pick a single source line, `R` open a
-  full-screen raw view with horizontal pan. Copies always come from the
-  original source, so no `↪` or `…` leaks. Uses native clipboard
+- **Copy** — `y` the block, `Y` pick source lines, `R` open a full-width
+  copy view without borders, margins, wrap markers, or default line numbers.
+  In either picker, `v` starts a line range, j/k extends it, and `y` copies;
+  `[` / `]` chooses another code block. Copies come from the source, so
+  no `↪` or `…` leaks and long commands remain complete. Uses native clipboard
   (`pbcopy` / `wl-copy` / `xclip` / `xsel`) when available, OSC 52
   otherwise.
 - **Tables** wrap long cells instead of truncating, keep column
@@ -205,8 +207,8 @@ cat post.md | glum -                        # read from stdin
 | n / N / Tab / → / ←   | next / previous search match                  |
 | c / Esc               | clear active search                           |
 | y                     | copy the in-view code block to clipboard      |
-| Y                     | pick a single code line to copy (j/k, Enter)  |
-| R                     | raw code view — no wrap, h/l pans, y copies   |
+| Y                     | pick code lines (j/k, v range, y / Enter copy) |
+| R                     | clean copy view — no wrap, h/l pans, y copies |
 | o                     | pick & open a link (j/k, Enter)               |
 | i                     | preview nearest image (needs `--images`)      |
 | ] / [                 | next / previous file (tabs)                   |
@@ -219,6 +221,31 @@ cat post.md | glum -                        # read from stdin
 | ?                     | toggle help overlay                           |
 | q                     | quit (Esc closes overlays but never quits)    |
 | Ctrl-C                | force quit from any mode                      |
+
+### Copying code and commands
+
+Press `R` near a code block to open the clean copy view. Code starts at the
+left edge of the terminal, with no side borders, added indentation, or wrap
+arrows. Drag to select visible text using your terminal's normal copy
+shortcut. This also works with `--mouse`: Glum releases mouse capture while
+the copy view is open and restores it when you leave.
+
+For an exact copy, including commands longer than the screen and original
+tabs, use the keyboard:
+
+- `j` / `k` or arrows: choose a source line; `y` / Enter copies it.
+- `v`, then movement: select a range of lines; `y` / Enter copies the range.
+  Press `v` again to return to a single line.
+- `Y`: copy the entire code block.
+- `[` / `]`: previous / next code block.
+- `h` / `l`: pan long lines; `0` / `$`: left / right end.
+- PgUp / PgDn: move a page; `#`: toggle optional line numbers.
+- Esc: return to reading (or the inline picker if you opened `R` from `Y`).
+
+Horizontal panning only changes what is visible. Keyboard copies include
+the complete selected source lines; dragging copies only the visible text.
+Copy feedback appears at the bottom of the view. The inline picker (`Y`
+while reading) supports the same range selection and block navigation.
 
 ## Position and preference memory
 
