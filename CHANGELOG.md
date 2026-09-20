@@ -4,7 +4,7 @@ All notable changes to glum are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] — 2026-09-19
 
 ### Changed
 
@@ -27,6 +27,8 @@ All notable changes to glum are documented in this file. Format based on
 - Horizontal pan stops at the last full screen of code, including after
   resizing, and `$` shows the end of long lines without an almost empty view.
 - Copying code preserves deliberate trailing blank lines.
+
+[0.4.0]: https://github.com/jaschadub/glum/releases/tag/v0.4.0
 
 ## [0.3.0] — 2026-07-22
 
