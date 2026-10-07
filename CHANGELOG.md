@@ -4,7 +4,7 @@ All notable changes to glum are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.1] — 2026-10-06
 
 ### Fixed
 
@@ -12,6 +12,8 @@ All notable changes to glum are documented in this file. Format based on
   visible, instead of always copying the first. Choose with j/k or arrows,
   then press y/Enter to copy the selected block. A single visible block
   still copies immediately; off-screen blocks are previewed before copying.
+
+[0.4.1]: https://github.com/jaschadub/glum/releases/tag/v0.4.1
 
 ## [0.4.0] — 2026-09-19
 
