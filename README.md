@@ -86,7 +86,9 @@ cosign verify-blob \
   full-width within the document. No borders, added padding, line numbers,
   or wrap markers. Code stays unwrapped by default; `h` / `l` pans long lines,
   `0` / `$` jumps to either end, and `W` toggles optional wrapping.
-- **Copy** — `y` the block, `Y` pick source lines, `R` open a full-width
+- **Copy** — `y` copies the only visible block, or highlights a block to
+  choose with `j` / `k` and copy with `y` / Enter when several are visible.
+  `Y` picks source lines; `R` opens a full-width
   copy view without borders, margins, wrap markers, or default line numbers.
   In either picker, `v` starts a line range, j/k extends it, and `y` copies;
   `[` / `]` chooses another code block. Copies come from the source, so
@@ -209,7 +211,7 @@ cat post.md | glum -                        # read from stdin
 | /                     | open search                                   |
 | n / N / Tab / → / ←   | next / previous search match                  |
 | c / Esc               | clear active search                           |
-| y                     | copy the in-view code block to clipboard      |
+| y                     | copy a block; if several are visible, pick with j/k, then y / Enter |
 | Y                     | pick code lines (j/k, v range, y / Enter copy) |
 | R                     | focused code view — h/l pans, y copies        |
 | h / l, 0 / $          | pan unwrapped code, jump to left / right end  |
@@ -241,7 +243,17 @@ also works there with `--mouse`: Glum releases mouse capture while the
 focused view is open and restores it when you leave.
 
 For an exact copy, including commands longer than the screen and original
-tabs, press `y` while reading to copy a block. In the focused view (`R`):
+tabs, press `y` while reading. If several blocks are on screen, the target
+is highlighted and the footer shows its number and language. Use `j` / `k`
+(or arrows, Tab / Shift-Tab, `]` / `[`) to choose, then `y` / Enter to copy
+the whole block. Esc closes the picker. With one visible block, `y` copies
+it immediately; an off-screen block is always previewed first.
+
+For example, with a setup block followed by a YAML CI job, press `y`, `j`,
+Enter to copy the YAML job. The selection stays on that block for repeated
+copies.
+
+In the focused view (`R`):
 
 - `j` / `k` or arrows: choose a source line; `y` / Enter copies it.
 - `v`, then movement: select a range of lines; `y` / Enter copies the range.

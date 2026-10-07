@@ -168,6 +168,11 @@ enum Mode {
         cursor: usize,
     },
     Help,
+    /// Choose a whole code block when more than one is visible. Highlight
+    /// the target before copying; j/k changes blocks, y/Enter confirms.
+    BlockPick {
+        block_idx: usize,
+    },
     /// Inline line-pick: the selected source line of a specific code block is
     /// highlighted in the main view; j/k move, y/Enter copies that line.
     LinePick {
@@ -334,10 +339,11 @@ impl App {
     }
 
     /// A `--follow` reload can shrink or remove code blocks while a
-    /// block-bound mode (`LinePick`/`RawCode`) holds indices into them.
+    /// block-bound mode holds indices into them.
     /// Drop back to reading mode if those indices no longer resolve.
     fn validate_block_mode(&mut self) {
         let valid = match &self.mode {
+            Mode::BlockPick { block_idx } => *block_idx < self.rendered.code_blocks.len(),
             Mode::LinePick {
                 block_idx,
                 line_idx,
@@ -838,8 +844,8 @@ impl App {
         }
     }
 
-    /// Copy the code block currently in view (or nearest above if none are
-    /// on-screen) to the system clipboard via OSC 52.
+    /// Copy a single visible block immediately. Multiple visible blocks
+    /// need an explicit target; do not silently copy the first one.
     fn copy_current_code_block(&mut self) {
         if clipboard::is_ssh_session() {
             // OSC 52 often doesn't survive SSH + tmux; we don't advertise the
@@ -848,11 +854,61 @@ impl App {
             self.set_status("copy unavailable in SSH session");
             return;
         }
-        let Some(block_idx) = self.current_code_block_idx() else {
-            self.set_status("no code blocks");
+        let visible = self.visible_code_blocks();
+        let Some(&block_idx) = visible.first() else {
+            if self.rendered.code_blocks.is_empty() {
+                self.set_status("no code blocks");
+            } else if let Some(block_idx) = self.current_code_block_idx() {
+                // An off-screen fallback must also be previewed before copy.
+                self.enter_block_pick(block_idx);
+            }
             return;
         };
-        self.copy_whole_block(block_idx);
+        if visible.len() > 1 {
+            self.enter_block_pick(block_idx);
+        } else {
+            self.copy_whole_block(block_idx);
+        }
+    }
+
+    fn visible_code_blocks(&self) -> Vec<usize> {
+        let bottom = self
+            .offset
+            .saturating_add(self.last_viewport_h.saturating_sub(1 + self.tab_rows()) as usize);
+        self.rendered
+            .code_blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| block.start_line < bottom && block.end_line >= self.offset)
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    fn enter_block_pick(&mut self, block_idx: usize) {
+        self.mode = Mode::BlockPick { block_idx };
+        self.code_h_off = 0;
+        self.status = None;
+        self.ensure_code_line_visible(block_idx, self.initial_line_idx(block_idx));
+    }
+
+    fn move_block_pick(&mut self, forward: bool) {
+        let Mode::BlockPick { block_idx } = self.mode else {
+            return;
+        };
+        if self.rendered.code_blocks.is_empty() {
+            self.mode = Mode::Reading;
+            self.set_status("no code blocks");
+            return;
+        }
+        let next = if forward {
+            (block_idx + 1).min(self.rendered.code_blocks.len() - 1)
+        } else {
+            block_idx.saturating_sub(1)
+        };
+        self.mode = Mode::BlockPick { block_idx: next };
+        self.code_h_off = 0;
+        self.status = None;
+        self.ensure_code_line_visible(next, 0);
     }
 
     fn copy_whole_block(&mut self, block_idx: usize) {
@@ -1451,6 +1507,8 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, cfg: AppConfi
 fn handle_mouse(app: &mut App, ev: MouseEvent) {
     let step: isize = 3;
     match (ev.kind, &app.mode) {
+        (MouseEventKind::ScrollUp, Mode::BlockPick { .. }) => app.move_block_pick(false),
+        (MouseEventKind::ScrollDown, Mode::BlockPick { .. }) => app.move_block_pick(true),
         (MouseEventKind::ScrollUp, Mode::LinePick { .. }) => {
             // Synthesize a `k` press-equivalent for line-pick.
             move_line_pick(app, -1);
@@ -1562,6 +1620,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         Mode::Reading => handle_key_reading(app, key),
         Mode::Toc { .. } => handle_key_toc(app, key),
         Mode::Search { .. } => handle_key_search(app, key),
+        Mode::BlockPick { .. } => handle_key_block_pick(app, key),
         Mode::LinePick { .. } => handle_key_line_pick(app, key),
         Mode::LinkPick { .. } => handle_key_link_pick(app, key),
         Mode::RawCode { .. } => handle_key_raw_code(app, key),
@@ -1655,6 +1714,30 @@ fn handle_key_reading(app: &mut App, key: KeyEvent) -> Result<bool> {
         KeyCode::Char('?') => {
             app.mode = Mode::Help;
         }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_key_block_pick(app: &mut App, key: KeyEvent) -> Result<bool> {
+    let Mode::BlockPick { block_idx } = app.mode else {
+        return Ok(false);
+    };
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return Ok(false);
+    }
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Reading,
+        KeyCode::Char('j' | ']') | KeyCode::Down | KeyCode::Tab => app.move_block_pick(true),
+        KeyCode::Char('k' | '[') | KeyCode::Up | KeyCode::BackTab => app.move_block_pick(false),
+        KeyCode::Char('y' | 'Y') | KeyCode::Enter => app.copy_whole_block(block_idx),
+        KeyCode::Char('h') => app.pan_code(-8),
+        KeyCode::Char('l') => app.pan_code(8),
+        KeyCode::Char('0') => app.pan_code(isize::MIN),
+        KeyCode::Char('$') => app.pan_code(isize::MAX),
         _ => {}
     }
     Ok(false)
@@ -2343,7 +2426,11 @@ fn draw(f: &mut ratatui::Frame<'_>, app: &mut App) {
         Mode::Search { input, cursor } => draw_search_overlay(f, app, input, *cursor, size),
         Mode::Help => draw_help_overlay(f, app, size),
         Mode::RawCode { .. } => {}
-        Mode::Reading | Mode::LinePick { .. } | Mode::LinkPick { .. } | Mode::ImageView { .. } => {}
+        Mode::Reading
+        | Mode::BlockPick { .. }
+        | Mode::LinePick { .. }
+        | Mode::LinkPick { .. }
+        | Mode::ImageView { .. } => {}
     }
 }
 
@@ -2447,6 +2534,19 @@ fn draw_body(f: &mut ratatui::Frame<'_>, app: &App, rect: Rect, code_rect: Rect)
                     &display[row - start],
                     &app.search_query,
                     hl,
+                    app.theme.base_style(),
+                );
+            }
+        }
+    }
+
+    // Preview the complete block that y/Enter will copy, including wrapped rows.
+    if let Mode::BlockPick { block_idx } = app.mode {
+        if let Some(block) = app.rendered.code_blocks.get(block_idx) {
+            for row in block.start_line.max(start)..block.end_line.saturating_add(1).min(end) {
+                display[row - start] = patch_line(
+                    &display[row - start],
+                    Style::default().add_modifier(Modifier::REVERSED),
                     app.theme.base_style(),
                 );
             }
@@ -2630,6 +2730,24 @@ fn highlight_query_in_line(
 fn draw_footer(f: &mut ratatui::Frame<'_>, app: &App, rect: Rect) {
     let dim = app.theme.dim_style();
     let accent = app.theme.accent_style();
+
+    if let Mode::BlockPick { block_idx } = app.mode {
+        if let Some(block) = app.rendered.code_blocks.get(block_idx) {
+            let label = format!(
+                "block {}/{} {}",
+                block_idx + 1,
+                app.rendered.code_blocks.len(),
+                shorten_middle(&block.lang, 12)
+            );
+            let (hint, style) = copy_status(app)
+                .unwrap_or_else(|| ("j/k choose · y/Enter copy · Esc close".to_string(), accent));
+            f.render_widget(
+                Paragraph::new(format!("{label} · {hint}")).style(style),
+                rect,
+            );
+            return;
+        }
+    }
 
     let name = shorten_middle(
         &app.cfg.display_name,
@@ -3137,7 +3255,7 @@ fn draw_help_overlay(f: &mut ratatui::Frame<'_>, app: &App, area: Rect) {
         ("Tab / \u{2192}", "next match"),
         ("Shift-Tab / \u{2190}", "prev match"),
         ("c / Esc", "clear active search"),
-        ("y", "copy code block in view"),
+        ("y", "copy block (j/k choose if several)"),
         ("Y", "pick code lines (v selects a range)"),
         ("R", "focused copy view (v range, [/] block)"),
         ("h/l · 0/$", "pan code · left/right end"),
@@ -3476,6 +3594,74 @@ mod tests {
         assert!(!handle_key(app, KeyEvent::new(code, KeyModifiers::NONE)).unwrap());
     }
 
+    const TWO_COPY_BLOCKS: &str = "Setup (one-time):\n\n```bash\ncomposer require --dev laravel/dusk\nphp artisan dusk:install\n```\n\nCI job:\n\n```yaml\ne2e:\n  image: php:8.5\n  script:\n    - php artisan dusk\n```\n";
+
+    #[test]
+    fn y_previews_multiple_blocks_and_j_selects_the_second() {
+        let mut app = test_app(TWO_COPY_BLOCKS);
+        screen(&mut app, 100, 30);
+        assert_eq!(app.visible_code_blocks(), vec![0, 1]);
+        keypress(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.mode, Mode::BlockPick { block_idx: 0 }));
+        assert!(
+            app.status.is_none(),
+            "opening a picker must not claim a copy"
+        );
+        keypress(&mut app, KeyCode::Char('j'));
+        assert!(matches!(app.mode, Mode::BlockPick { block_idx: 1 }));
+        let rows = screen(&mut app, 100, 30);
+        assert!(rows[29].contains("block 2/2 yaml"));
+        assert!(rows[29].contains("y/Enter copy"));
+        keypress(&mut app, KeyCode::Char('j'));
+        assert!(matches!(app.mode, Mode::BlockPick { block_idx: 1 }));
+        keypress(&mut app, KeyCode::Char('k'));
+        assert!(matches!(app.mode, Mode::BlockPick { block_idx: 0 }));
+        keypress(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Reading));
+    }
+
+    #[test]
+    fn block_picker_highlights_the_selected_block_only() {
+        let mut app = test_app(TWO_COPY_BLOCKS);
+        screen(&mut app, 100, 30);
+        keypress(&mut app, KeyCode::Char('y'));
+        keypress(&mut app, KeyCode::Down);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        for (index, block) in app.rendered.code_blocks.iter().enumerate() {
+            let y = (block.start_line - app.offset) as u16;
+            assert_eq!(
+                buffer[(0, y)].modifier.contains(Modifier::REVERSED),
+                index == 1
+            );
+        }
+    }
+
+    #[test]
+    fn footer_rows_are_not_counted_as_visible_code() {
+        let mut app = test_app(TWO_COPY_BLOCKS);
+        screen(&mut app, 100, 30);
+        app.last_viewport_h = app.rendered.code_blocks[1].start_line as u16 + 1;
+        assert_eq!(app.visible_code_blocks(), vec![0]);
+        app.offset = app.rendered.code_blocks[1].start_line;
+        assert_eq!(app.visible_code_blocks(), vec![1]);
+    }
+
+    #[test]
+    fn offscreen_copy_requires_preview_and_stale_block_picker_closes() {
+        let mut app = test_app(TWO_COPY_BLOCKS);
+        screen(&mut app, 100, 30);
+        app.offset = app.rendered.code_blocks[0].end_line + 1;
+        app.last_viewport_h = 2;
+        assert_eq!(app.visible_code_blocks(), [] as [usize; 0]);
+        keypress(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.mode, Mode::BlockPick { block_idx: 0 }));
+        app.rendered.code_blocks.clear();
+        app.validate_block_mode();
+        assert!(matches!(app.mode, Mode::Reading));
+    }
+
     fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
         let backend = ratatui::backend::TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3768,7 +3954,7 @@ mod tests {
     fn search_matches_inline_code() {
         let mut app = test_app("run `glum` now\n");
         app.update_matches("glum");
-        assert!(!app.search_matches.is_empty());
+        assert_ne!(app.search_matches, [] as [usize; 0]);
     }
 
     #[test]
@@ -3834,7 +4020,7 @@ mod tests {
     fn esc_in_reading_clears_search_instead_of_quitting() {
         let mut app = test_app("needle\n");
         app.update_matches("needle");
-        assert!(!app.search_matches.is_empty());
+        assert_ne!(app.search_matches, [] as [usize; 0]);
         let quit =
             handle_key_reading(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
         assert!(!quit, "Esc must not quit from reading mode");
@@ -3899,7 +4085,7 @@ mod tests {
         assert_eq!(toc_filter_indices(&toc, ""), vec![0, 1, 2]);
         assert_eq!(toc_filter_indices(&toc, "co"), vec![1, 2]);
         assert_eq!(toc_filter_indices(&toc, "BLOCKS"), vec![1]);
-        assert!(toc_filter_indices(&toc, "zzz").is_empty());
+        assert_eq!(toc_filter_indices(&toc, "zzz"), [] as [usize; 0]);
     }
 
     #[test]

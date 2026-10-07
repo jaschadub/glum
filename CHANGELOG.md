@@ -4,6 +4,15 @@ All notable changes to glum are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `y` now opens a highlighted block picker when several code blocks are
+  visible, instead of always copying the first. Choose with j/k or arrows,
+  then press y/Enter to copy the selected block. A single visible block
+  still copies immediately; off-screen blocks are previewed before copying.
+
 ## [0.4.0] — 2026-09-19
 
 ### Changed

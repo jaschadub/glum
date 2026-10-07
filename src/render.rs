@@ -1284,7 +1284,7 @@ mod tests {
     #[test]
     fn renders_paragraph() {
         let r = render("Hello world.", 40, 40, plain(), LayoutName::Minimal, true);
-        assert!(!r.lines.is_empty());
+        assert_ne!(r.lines, []);
         assert!(r.lines[0].width() > 0);
     }
 
@@ -1325,7 +1325,7 @@ mod tests {
             let block = &r.code_blocks[0];
             assert_eq!(r.lines[block.start_line].to_string(), command);
             assert_eq!(block.line_visuals[0], (block.start_line, block.start_line));
-            assert!(r.lines[block.end_line].to_string().is_empty());
+            assert_eq!(r.lines[block.end_line].to_string(), "");
             assert_eq!(r.max_width, 0, "wide code must not widen the prose column");
         }
     }
@@ -1789,7 +1789,7 @@ mod tests {
         let chunks = wrap_code_line("\u{4F60}\u{597D}\u{4E16}\u{754C}", 5, 5);
         for c in &chunks {
             assert!(unicode_width::UnicodeWidthStr::width(c.as_str()) <= 5);
-            assert!(!c.is_empty());
+            assert_ne!(c, "");
         }
         let joined: String = chunks.concat();
         assert_eq!(joined, "\u{4F60}\u{597D}\u{4E16}\u{754C}");
